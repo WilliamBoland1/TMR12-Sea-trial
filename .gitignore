@@ -1,0 +1,11 @@
+# Data (raw ship/buoy files ~4 GB + generated parquet)
+data/
+
+# Documents
+docs/
+
+# Virtual environment
+.venv/
+
+# Python caches
+__pycache__/
