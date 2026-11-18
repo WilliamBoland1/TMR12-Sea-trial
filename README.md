@@ -1,6 +1,20 @@
 # TMR12 – RV Gunnerus wave-radar trial, week 44 2023
 
-Explore the ship motion logs from RV Gunnerus (31 Oct, 2 Nov, 3 Nov 2023) on a map, and compare them with the E39 wave buoys outside Ålesund.
+Explore the ship motion logs from RV Gunnerus (30 Oct, 31 Oct, 2 Nov, 3 Nov 2023) on a map, and compare them with the E39 wave buoys outside Ålesund (A, B, C, D, F) and in Halsafjorden (G).
+
+## The project in 9 steps
+
+The app (`streamlit run app.py`) tells the same story, one step per page. Each page has the question, one main plot, a takeaway, and a collapsed "Show details" section.
+
+1. **The question:** can the ship's own motion tell us how big the waves are?
+2. **One day at sea:** what does the data look like? The ship sails from the quay to a few stations and back, and moves most at the stations.
+3. **Can we trust the data?** The ship logs are complete. Limits: GNSS height updates only ~10×/s, it has a noise floor of ~0.15 m (4σ), and buoys C, D and F have no wave data in November.
+4. **How the ship moves:** almost still at the quay, a little in transit, most at the stations.
+5. **The waves at the buoys:** small waves. Exposed buoy D had about 0.6–0.7 m, sheltered A and B about 0.2 m.
+6. **Ship vs buoy:** more waves give more heave (r ≈ 0.73), but this is tangled up with the site (D vs A) and with distance to the buoy.
+7. **Heading vs waves:** where the buoy was close (31 Oct, D), the ship rolled most with waves from the side.
+8. **Machine learning:** reading heave 4σ directly as Hm0 (error ≈ 0.12 m) beats trained models on an unseen day.
+9. **What we learned:** roughly yes, the ship can measure these waves, plus the limits and next steps.
 
 ## Run
 
@@ -16,23 +30,16 @@ python tests/test_data.py # self-checks
 
 In VS Code, pick `.venv` via *Python: Select Interpreter*.
 
-## App pages
-
-| Page | What it shows |
-|---|---|
-| **Day overview** | The track on a real map (OpenStreetMap, satellite, OpenSeaMap sea marks), stations and buoys. Below it: speed, heading, roll/pitch and heave over a chosen time window, plus raw 100 Hz signals for any 2-minute window. |
-| **Ship vs buoys** | Buoy Hm0/Tp next to ship heave and roll/pitch in 10-minute blocks, the ship–buoy distance, and a per-station table. |
-| **Heading vs waves** | Ship heading against the buoy's wave direction, and the resulting relative wave heading. Includes a table of steady-heading blocks (which test-plan angle each block really was) and a plot of roll vs relative heading across all days. |
-
 ## Layout
 
 ```
-app.py              Streamlit UI
+app.py              Streamlit UI: the 9 steps
 main.py             CLI: processed data + PNG reports
-tmr12/data.py       loading, 10 s summaries, phases, 10-min blocks, heading blocks, buoys
+tmr12/data.py       loading, 10 s summaries, phases, 10-min blocks, heading blocks, buoys, quality checks
+tmr12/ml.py         ship-as-a-wave-buoy models (scikit-learn)
 tmr12/maps.py       folium map
 tmr12/report.py     static PNG overview
-data/raw/ship/      31/, 02/, 03/  ->  <hh>/<YYYYMMDDhhmmss>.csv
+data/raw/ship/      30/, 31/, 02/, 03/  ->  <hh>/<YYYYMMDDhhmmss>.csv
 data/raw/buoys/     E39 buoy subset (+ cut_buoys.py that made it)
 data/processed/     generated, safe to delete
 reports/            generated PNGs
@@ -40,7 +47,30 @@ docs/               test program
 tests/              self-checks
 ```
 
-To add a day, drop its folder into `data/raw/ship/`. The date is read from the file names.
+To add a day, drop its folder into `data/raw/ship/`. The date is read from the file names. Add a one-line description for it to `PLAN` in `tmr12/data.py`.
+
+## Buoy data
+
+Source: Norwegian Meteorological Institute, E39 buoys (NLOD / CC BY 3.0 NO): <https://thredds.met.no/thredds/catalog/obs/buoy-svv-e39/2023/.html>
+
+| Buoy | Location | Months here |
+|---|---|---|
+| A, B, C | Sulafjorden | Oct, Nov (C: Nov raw only) |
+| D | Breisundet | Oct (Nov raw only) |
+| F | Vartdalsfjorden | Oct |
+| G | Halsafjorden (near Kristiansund) | Oct, Nov |
+| L4 | Sulafjorden | Oct raw only |
+
+"Raw only" files hold the buoy's own motion (heave, pitch, roll, compass at 2 Hz) but no wave parameters (Hm0, Tp, Mdir), so the app does not use them.
+
+To add a buoy, download its monthly `*_wave.nc` into `data/raw/buoys/`, then run:
+
+```bash
+pip install xarray netCDF4                          # only needed for this step
+python data/raw/buoys/cut_buoys.py data/raw/buoys data/raw/buoys
+```
+
+This cuts each new file to the trial windows (`*_trial.nc`) and rebuilds `buoy_wave_params_trial.csv` from all cut files. The app picks the new buoy up automatically.
 
 ## Ship CSV columns (`;`, no header, 100 Hz, one file = 10 s)
 
@@ -67,7 +97,6 @@ To add a day, drop its folder into `data/raw/ship/`. The date is read from the f
 
 ## Known data gaps
 
+- **30 Oct:** the plan said buoys D and B, but the ship actually stopped at D (Station 1) and A (Stations 2–3).
 - **2 Nov:** buoy D (where the ship sat) has only raw files, no wave parameters. The nearest buoy with data is A, about 7 km away.
-- **3 Nov:** the ship was near Kristiansund, about 100 km from the buoys, so the buoy comparison is not meaningful.
-
-Buoy data from the Norwegian Meteorological Institute (NLOD / CC BY 3.0 NO).
+- **3 Nov:** the ship was off Kristiansund. The nearest buoy is G, about 24 km from Station 2 and 65 km from Station 1. G sits inside Halsafjorden (short fjord waves, Hm0 ≈ 0.3 m), so it is only a rough reference for the open-sea conditions the ship saw.

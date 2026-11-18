@@ -1,12 +1,13 @@
 """Self-checks for the non-trivial logic in tmr12.data.  Run: python tests/test_data.py"""
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from tmr12 import data  # noqa: E402
+from tmr12 import data, ml  # noqa: E402
 
 
 def fake_day(speed, heading):
@@ -53,6 +54,45 @@ def test_heading_blocks():
     hb = data.heading_blocks(s, p, b, 'E39 D Breisundet')
     assert len(hb) == 2, hb
     assert np.allclose(hb.rel_Mdir.round(), [0, -15]), hb.rel_Mdir.tolist()   # 15 deg starboard turn -> waves on port bow
+
+
+def buoy_rows(name, times, lat, lon):
+    return pd.DataFrame({'time': times, 'buoy': name, 'Hm0': 0.5, 'Hm0a': 0.1, 'Hm0b': 0.4, 'Tp': 6.0,
+                         'Tm02': 3.0, 'Mdir': 0.0, 'ThTp': 0.0, 'SprTp': 30.0, 'latitude': lat, 'longitude': lon})
+
+
+def test_nearest_buoy_blocks():
+    t = pd.date_range('2023-10-31 06:10', periods=3, freq='10min', tz='UTC')
+    blk = pd.DataFrame({'time': t, 'lat': 62.446, 'lon': 5.927})
+    b = pd.concat([buoy_rows('E39 D Breisundet', t[:2], 62.446, 5.927),    # at the ship, but misses the 3rd block
+                   buoy_rows('E39 A Sulafjorden', t, 62.427, 6.044)])
+    m = data.nearest_buoy_blocks(blk, b)
+    assert list(m.buoy) == ['E39 D Breisundet'] * 2 + ['E39 A Sulafjorden'], list(m.buoy)
+
+
+def test_quality_checks():
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / '00').mkdir()
+        (Path(d) / '00' / 'x.csv').write_text(';'.join(['0'] * len(data.COLS)) + '\n')
+        s = fake_day(np.zeros(100), np.zeros(100)).drop(index=50).reset_index(drop=True)   # one missing file
+        s.loc[10, 'roll_mean'] = 50
+        c = data.ship_checks(s, d)
+    assert (c['files'], c['expected'], c['gaps_over_11s'], c['out_of_range'], c['csv_columns']) == (99, 100, 1, 1, 14), c
+    t = pd.date_range('2023-10-31 06:00', periods=6, freq='10min', tz='UTC')
+    q = data.buoy_checks(pd.concat([buoy_rows('A', t, 62.4, 6.0), buoy_rows('B', t[:3], 62.5, 6.0),
+                                    buoy_rows('A', t + pd.Timedelta('2D'), 62.4, 6.0)]))
+    q = q.set_index(['buoy', 'day'])
+    assert q.loc[('B', '2023-11-02'), 'records'] == 0 and q.loc[('B', '2023-10-31'), 'coverage_pct'] == 50, q
+
+
+def test_ml():
+    rng = np.random.default_rng(0)
+    x = np.r_[rng.uniform(0.1, 0.4, 40), rng.uniform(0.3, 0.7, 40), rng.uniform(0.5, 0.9, 40)]
+    df = pd.DataFrame({'day': np.repeat(['d1', 'd2', 'd3'], 40), 'heave_hs_m': x,
+                       'Hm0': 0.5 * x + rng.normal(0, 0.01, 120)})
+    m = ml.evaluate(df, ['heave_hs_m'])[0].set_index('model')
+    assert m.loc['Linear regression', 'R2'] > 0.9, m
+    assert m.loc['Linear regression', 'MAE_m'] < m.loc['Mean (baseline)', 'MAE_m'], m
 
 
 if __name__ == '__main__':

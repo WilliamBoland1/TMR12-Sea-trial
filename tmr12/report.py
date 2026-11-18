@@ -57,7 +57,7 @@ def overview_png(s, p, day, folder):
         for r in p[p.phase.str.startswith('Station')].itertuples():
             ax.axvspan(r.start, r.end, color='#ecebe6', lw=0)
             if i == 0:
-                ax.text(r.start + (r.end - r.start) / 2, 1.02, r.phase, transform=ax.get_xaxis_transform(),
+                ax.text(r.start + (r.end - r.start) / 2, 1.02, r.phase.split()[-1], transform=ax.get_xaxis_transform(),
                         ha='center', color=INK2)
         for col, color, name in series:
             if col == 'heading':  # dots, so the 360->0 wrap doesn't draw vertical lines

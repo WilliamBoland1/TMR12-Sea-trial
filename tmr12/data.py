@@ -22,16 +22,24 @@ COLS = ['t', 'lat', 'lon',
         'roll', 'pitch', 'heading',            # [deg]
         'roll_rate', 'pitch_rate', 'yaw_rate']  # inferred: [deg/s]
 
-PLAN = {'2023-10-31': 'Test plan day 2: buoy A or C', '2023-11-02': 'Test plan day 4: strong waves, many headings',
+PLAN = {'2023-10-30': 'Test plan day 1: buoys D and B', '2023-10-31': 'Test plan day 2: buoy A or C',
+'2023-11-02': 'Test plan day 4: strong waves, many headings',
         '2023-11-03': 'Test plan day 5: Hustadvika, heading for Trondheim'}
 
-# Tuning knobs (checked against 31 Oct / 2 Nov / 3 Nov; adjust if new data behaves differently)
+# Tuning knobs (checked against 30 Oct / 31 Oct / 2 Nov / 3 Nov; adjust if new data behaves differently)
 MOVING_KN = 3           # 5-min median speed above this = transit
 MIN_STOP_MIN = 10       # shorter stops count as transit
 STEADY_DEG = 3          # heading change over 30 s below this = steady heading
 MIN_BLOCK_MIN = 5       # shortest steady-heading block kept
 MERGE_DEG, MERGE_GAP_MIN = 4, 2   # merge neighbouring blocks with ~same heading and a short gap
 NOMINAL = [0, 15, -15, 30, -30, 60, -60, 90, -90, 180]   # test-plan headings relative to waves
+WAVE = ['Hm0', 'Hm0a', 'Hm0b', 'Tp', 'Tm02', 'Mdir', 'ThTp', 'SprTp']   # buoy wave parameters
+
+# Plausible ranges for the data-quality checks
+SHIP_LIMITS = {'roll_mean': (-30, 30), 'pitch_mean': (-15, 15), 'speed_kn': (0, 15),
+               'lat': (61, 64.5), 'lon': (4, 10), 'heading': (0, 360)}
+BUOY_LIMITS = {'Hm0': (0, 10), 'Hm0a': (0, 10), 'Hm0b': (0, 10), 'Tp': (1, 25), 'Tm02': (1, 25),
+               'Mdir': (0, 360), 'ThTp': (0, 360), 'SprTp': (0, 90)}
 
 
 # ---------- ship ----------
@@ -179,10 +187,16 @@ def day_buoys(s, b):
 
 def with_buoy(blk, b, buoy):
     """10-min ship blocks joined with one buoy's records (only times where the buoy has data)."""
-    bb = b[b.buoy == buoy][['time', 'Hm0', 'Tp', 'Mdir', 'ThTp', 'latitude', 'longitude']]
+    bb = b[b.buoy == buoy][['time', *WAVE, 'latitude', 'longitude']]
     m = blk.merge(bb, on='time')
     m['dist_km'] = dist_km(m.lat, m.lon, m.latitude, m.longitude)
     return m
+
+
+def nearest_buoy_blocks(blk, b):
+    """10-min ship blocks, each joined with the nearest buoy that has data at that time."""
+    m = pd.concat([with_buoy(blk, b, n).assign(buoy=n) for n in b.buoy.unique()], ignore_index=True)
+    return m.sort_values('dist_km').drop_duplicates('time').sort_values('time').reset_index(drop=True)
 
 
 def station_table(s, p, b, buoy):
@@ -230,4 +244,48 @@ def heading_blocks(s, p, b, buoy):
             row['rel_Mdir'] = rel_heading(row['Mdir'], st.heading)
             row['rel_ThTp'] = rel_heading(row['ThTp'], st.heading)
             rows.append(row)
+    return pd.DataFrame(rows)
+
+
+# ---------- data quality ----------
+
+def out_of_range(df, limits):
+    """Number of values outside their {column: (lo, hi)} range (NaN not counted)."""
+    return int(sum(((df[c] < lo) | (df[c] > hi)).sum() for c, (lo, hi) in limits.items()))
+
+
+def ship_checks(s, day_dir):
+    """Observability checks for one ship day of 10 s rows: volume, gaps, schema, value ranges."""
+    dt = s.time.diff().dt.total_seconds()
+    expected = round((s.time.iloc[-1] - s.time.iloc[0]).total_seconds() / 10) + 1
+    first = next(Path(day_dir).glob('*/*.csv'))
+    return {'files': len(s), 'expected': expected, 'complete_pct': 100 * len(s) / expected,
+            'min_samples_per_file': int(s.n.min()), 'max_step_s': dt.max(), 'gaps_over_11s': int((dt > 11).sum()),
+            'nan_values': int(s.isna().sum().sum()), 'out_of_range': out_of_range(s, SHIP_LIMITS),
+            'csv_columns': pd.read_csv(first, sep=';', header=None, nrows=5).shape[1]}
+
+
+def update_rates(raw):
+    """Changes per second of each raw column (100 Hz rows). ~100 = a true 100 Hz signal, ~10 = a 10 Hz sensor
+    repeated between updates. A calm signal also changes less often because of its value resolution."""
+    return (raw[COLS[1:]].diff().iloc[1:] != 0).sum() / (len(raw) / 100)
+
+
+def buoy_checks(b):
+    """Per buoy and trial day: records vs expected (10 min grid), largest gap, out-of-range values,
+    and how far the buoy drifted from its median position (mooring watch circle)."""
+    b = b.assign(day=b.time.dt.tz_convert(TZ).dt.strftime('%Y-%m-%d'))
+    span = b.groupby('day').time.agg(['min', 'max'])
+    expected = ((span['max'] - span['min']) / pd.Timedelta('10min')).astype(int) + 1
+    pos = buoy_positions(b)
+    rows = []
+    for buoy in pos.index:
+        p = pos.loc[buoy]
+        for day in span.index:
+            g = b[(b.buoy == buoy) & (b.day == day)]
+            rows.append({'buoy': buoy, 'day': day, 'records': len(g), 'expected': expected[day],
+                         'coverage_pct': 100 * len(g) / expected[day],
+                         'max_gap_min': g.time.diff().max() / pd.Timedelta('1min'),
+                         'out_of_range': out_of_range(g, BUOY_LIMITS),
+                         'mooring_spread_m': 1000 * dist_km(g.latitude, g.longitude, p.latitude, p.longitude).max()})
     return pd.DataFrame(rows)
