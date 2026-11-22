@@ -1,0 +1,5 @@
+buoy,day,records,expected,coverage_pct,max_gap_min,out_of_range,mooring_spread_m
+E39 A Sulafjorden,2023-10-30,84,84,100.0,10.0,0,53.248842665718264
+E39 A Sulafjorden,2023-10-31,84,84,100.0,10.0,0,55.49314466150291
+E39 D Breisundet,2023-10-30,84,84,100.0,10.0,0,98.78504404926665
+E39 D Breisundet,2023-10-31,84,84,100.0,10.0,0,110.76821421292789
