@@ -37,7 +37,10 @@ if __name__ == '__main__':
         eda.OUT / 'ship_quality.csv')
     data.buoy_checks(b).to_csv(eda.OUT / 'buoy_quality.csv', index=False)
     eda.summary_stats(s_all).to_csv(eda.OUT / 'summary_stats.csv')
-    blocks = pd.concat([eda.dp_blocks(days[d], phases[d], b).assign(day=d) for d in days], ignore_index=True)
+    # Steady-heading blocks; the motion is also computed from the raw 100 Hz data of each whole block
+    spectra = {}
+    blocks = pd.concat([eda.dp_blocks(days[d], phases[d], b, eda.raw_files(data.days()[d]), spectra).assign(day=d)
+                        for d in days], ignore_index=True)
     blocks.round(3).to_csv(eda.OUT / 'dp_heading_blocks.csv', index=False)
     print(f'{len(blocks)} steady-heading blocks at the DP stations')
 
@@ -51,3 +54,4 @@ if __name__ == '__main__':
     print(eda.fig_footprints(s_all, blocks))
     print(eda.fig_vs_heading(blocks))
     print(eda.fig_correlation(blocks))
+    print(eda.fig_spectra(blocks, spectra))

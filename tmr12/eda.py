@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker
 import numpy as np
 import pandas as pd
+from scipy import signal
 
 from tmr12 import data
 
@@ -32,6 +33,8 @@ plt.rcParams.update({'figure.dpi': 110, 'savefig.dpi': 150, 'font.size': 9,
 
 M_PER_DEG_LAT = 111_320   # metres per degree latitude (good enough for a few hundred metres)
 MAX_BUOY_KM = 3           # a buoy further away than this does not describe the waves at the ship
+FS = 100                  # raw sample rate [Hz]
+HIGHPASS_S = 30           # keep motions faster than this period [s]: waves, not tide or slow GNSS drift
 
 
 def save(fig, name):
@@ -65,6 +68,70 @@ def local_xy(lat, lon, lat0, lon0):
     return north, east
 
 
+def minute_stats(s):
+    """1-minute windows (6 files = 6000 samples) for the overview figures.
+    Roll and pitch: std over the whole minute (data.pooled), so each value covers several wave periods,
+    unlike one 10 s file that holds only one or two. Heave: see the comment below; the exact wave
+    heave per block comes from the raw data (raw_block_motion)."""
+    rows = []
+    for t, g in s.groupby(s.time.dt.floor('1min')):
+        if len(g) < 6:
+            continue
+        rows.append({'time': t, 'speed_kn': g.speed_kn.mean(), 'heading': data.circmean(g.heading),
+                     'roll_std': data.pooled(g, 'roll'), 'pitch_std': data.pooled(g, 'pitch'),
+                     # heave: only the variation inside each 10 s file, so slow GNSS drift is left out
+                     'heave_hs_m': 4 * data.within(g, 'height') / 100, 'phase': g.phase.mode().iloc[0]})
+    m = pd.DataFrame(rows)
+    m['kind'] = m.phase.map(phase_kind)
+    return m
+
+
+# ---------- raw 100 Hz data ----------
+
+def raw_files(day_dir):
+    """All raw 10 s files of one day, indexed by their start time (file names are in local time)."""
+    files = sorted(Path(day_dir).glob('*/*.csv'))
+    t = pd.to_datetime([f.stem for f in files], format='%Y%m%d%H%M%S')
+    t = t.tz_localize(data.TZ, ambiguous='NaT', nonexistent='NaT')   # the DST night gives NaT
+    return pd.Series(files, index=t)[t.notna()]
+
+
+def raw_block(files, start, end):
+    """Glue the raw files of one block into one continuous 100 Hz time series."""
+    sel = files[(files.index >= start - pd.Timedelta('15s')) & (files.index < end)]
+    d = pd.concat([pd.read_csv(f, sep=';', header=None, names=data.COLS) for f in sel])
+    d = d[(d.t >= start.timestamp()) & (d.t < end.timestamp())]
+    return d.sort_values('t').reset_index(drop=True)
+
+
+def wave_part(x):
+    """Remove the mean, trend and everything slower than HIGHPASS_S (tide, GNSS drift, slow list)."""
+    sos = signal.butter(4, 1 / HIGHPASS_S, 'highpass', fs=FS, output='sos')
+    return signal.sosfiltfilt(sos, signal.detrend(np.asarray(x, dtype=float)))
+
+
+def spectrum(x):
+    """Power spectral density (Welch, 120 s segments) and the peak period between 2 and 25 s."""
+    f, psd = signal.welch(x, fs=FS, nperseg=120 * FS)
+    ok = (f > 1 / 25) & (f < 1 / 2)
+    return f, psd, 1 / f[ok][psd[ok].argmax()]
+
+
+def raw_block_motion(d):
+    """Wave-induced motion of one block from the raw 100 Hz data: std, heave 4σ and peak periods."""
+    out, spectra = {}, {}
+    for col, name in [('roll', 'roll'), ('pitch', 'pitch'), ('height_cm', 'heave')]:
+        x = wave_part(d[col] / 100 if col == 'height_cm' else d[col])   # height: cm -> m
+        f, psd, tp = spectrum(x)
+        spectra[name] = (f, psd)
+        out[f'{name}_tp_s'] = tp
+        if name == 'heave':
+            out['heave_hs_wave'] = 4 * x.std()
+        else:
+            out[f'{name}_std_wave'] = x.std()
+    return out, spectra
+
+
 # ---------- tables ----------
 
 def nearest_buoy(lat, lon, b):
@@ -73,12 +140,14 @@ def nearest_buoy(lat, lon, b):
     return d.index[0].split()[1], d.iloc[0]
 
 
-def dp_blocks(s, p, b):
+def dp_blocks(s, p, b, files=None, spectra=None):
     """One row per steady-heading block at a DP station: ship motion, footprint, waves and wind.
 
     The heading blocks come from data.heading_blocks, using the buoy nearest to each station.
     Added here: footprint size (from the 10 s mean positions) and wind from the buoy.
-    Stations further than MAX_BUOY_KM from every buoy keep their ship values, but get no waves/wind."""
+    Stations further than MAX_BUOY_KM from every buoy keep their ship values, but get no waves/wind.
+    With the raw files (files = raw_files(day dir)) the wave-induced motion is also computed from the
+    100 Hz data of the whole block; spectra (a dict) then collects the spectra per block."""
     rows = []
     for st in p[p.phase.str.startswith('Station')].itertuples():
         short, km = nearest_buoy(st.lat, st.lon, b)
@@ -96,6 +165,11 @@ def dp_blocks(s, p, b):
             if km > MAX_BUOY_KM:   # too far away: drop the buoy values for this block
                 short, w, wind_from = 'none', w.iloc[0:0], np.nan
                 row.update({k: np.nan for k in ['Hm0', 'Tp', 'Mdir', 'ThTp', 'rel_Mdir', 'rel_ThTp']})
+            if files is not None:
+                motion, spec = raw_block_motion(raw_block(files, blk.start, blk.end))
+                row.update(motion)
+                if spectra is not None:
+                    spectra[(blk.start, blk.end)] = spec
             rows.append({**row, 'buoy': short, 'buoy_km': km,
                          'footprint_r95_m': np.percentile(radius, 95),   # 95 % of positions inside this circle
                          'footprint_std_m': np.sqrt(north.var() + east.var()),
@@ -158,7 +232,8 @@ def fig_tracks(days, b):
 
 
 def fig_day_timeseries(day, s, p):
-    """One day at a glance: speed, heading, roll and heave over time, stations shaded."""
+    """One day at a glance: speed, heading, roll and heave over time (1-minute values), stations shaded."""
+    s = minute_stats(s)
     signals = [('speed_kn', 'speed [kn]'), ('heading', 'heading [°]'),
                ('roll_std', 'roll σ [°]'), ('heave_hs_m', 'heave 4σ [m]')]
     fig, axes = plt.subplots(len(signals), 1, figsize=(9, 7), sharex=True)
@@ -176,9 +251,10 @@ def fig_day_timeseries(day, s, p):
 
 
 def fig_univariate(s_all):
-    """Distribution of the ship motion per phase type: histograms (top) and box plots (bottom)."""
-    cols = [('roll_std', 'roll σ per 10 s [°]'), ('pitch_std', 'pitch σ per 10 s [°]'),
-            ('heave_hs_m', 'heave 4σ per 10 s [m]')]
+    """Distribution of the ship motion per phase type (1-minute values): histograms and box plots."""
+    s_all = pd.concat([minute_stats(g) for _, g in s_all.groupby('day')], ignore_index=True)
+    cols = [('roll_std', 'roll σ per minute [°]'), ('pitch_std', 'pitch σ per minute [°]'),
+            ('heave_hs_m', 'heave 4σ per minute [m]')]
     fig, axes = plt.subplots(2, len(cols), figsize=(11, 6))
     for j, (col, label) in enumerate(cols):
         hi = s_all[col].quantile(0.995)   # cut the 0.5 % largest so the bulk is visible
@@ -269,15 +345,17 @@ def fig_footprints(s_all, blocks):
 
 def fig_vs_heading(blocks):
     """Bivariate: footprint, roll and pitch per heading block vs the relative wave heading."""
-    cols = [('footprint_r95_m', 'footprint R95 [m]'), ('roll_std', 'roll σ [°]'), ('pitch_std', 'pitch σ [°]')]
+    cols = [('footprint_r95_m', 'footprint R95 [m]'), ('roll_std_wave', 'roll σ [°]'),
+            ('pitch_std_wave', 'pitch σ [°]'), ('heave_hs_wave', 'heave 4σ [m]')]
     blocks = blocks[blocks.buoy != 'none']
-    fig, axes = plt.subplots(1, len(cols), figsize=(11, 3.4))
+    fig, axes = plt.subplots(2, 2, figsize=(9, 6.5))
+    axes = axes.flatten()
     for ax, (col, label) in zip(axes, cols):
         for short, colour in BUOY_COLOURS.items():
             g = blocks[blocks.buoy == short]
             ax.scatter(g.abs_rel_wave, g[col], s=g.minutes * 1.5, color=colour, alpha=0.8,
                        edgecolor='white', lw=0.5, label=f'at buoy {short}')
-        ax.set(xlabel='|relative wave heading| [°]  (0 = head, 90 = beam)', ylabel=label, xlim=(-5, 185))
+        ax.set(xlabel='|relative wave heading| [°] (0 = head, 90 = beam)', ylabel=label, xlim=(-5, 185))
         ax.set_xticks([0, 45, 90, 135, 180])
     axes[0].legend(frameon=False)
     fig.tight_layout()
@@ -287,8 +365,9 @@ def fig_vs_heading(blocks):
 def fig_correlation(blocks):
     """Multivariate: correlation matrix of the heading-block variables."""
     cols = {'Hm0': 'Hm0', 'Tp': 'Tp', 'wind_ms': 'wind speed', 'abs_rel_wave': '|rel. wave dir.|',
-            'abs_rel_wind': '|rel. wind dir.|', 'roll_std': 'roll σ', 'pitch_std': 'pitch σ',
-            'heave_hs_m': 'heave 4σ', 'footprint_r95_m': 'footprint R95', 'heading_std_deg': 'heading σ',
+            'abs_rel_wind': '|rel. wind dir.|', 'roll_std_wave': 'roll σ', 'pitch_std_wave': 'pitch σ',
+            'heave_hs_wave': 'heave 4σ', 'heave_tp_s': 'heave peak period', 'footprint_r95_m': 'footprint R95',
+            'heading_std_deg': 'heading σ',
             'dist_km': 'dist. to buoy'}
     blocks = blocks[blocks.buoy != 'none']
     c = blocks[list(cols)].rename(columns=cols).corr(method='spearman')   # rank correlation: robust, few points
@@ -304,3 +383,25 @@ def fig_correlation(blocks):
     fig.colorbar(im, ax=ax, label='Spearman correlation')
     fig.tight_layout()
     return save(fig, '8_correlation.png')
+
+
+def fig_spectra(blocks, spectra):
+    """Roll, pitch and heave spectra of the heading blocks at buoy D (from the raw 100 Hz data),
+    coloured by the relative wave heading. Dashed line: mean buoy peak period Tp."""
+    blocks = blocks[blocks.buoy == 'D']
+    fig, axes = plt.subplots(1, 3, figsize=(11, 3.4))
+    cmap, norm = plt.get_cmap('viridis'), plt.Normalize(0, 180)
+    for blk in blocks.itertuples():
+        spec = spectra[(blk.start, blk.end)]
+        for ax, name in zip(axes, ['roll', 'pitch', 'heave']):
+            f, psd = spec[name]
+            ok = (f > 1 / 25) & (f < 0.5)
+            ax.plot(f[ok], psd[ok], lw=1, color=cmap(norm(blk.abs_rel_wave)))
+    units = {'roll': '°²/Hz', 'pitch': '°²/Hz', 'heave': 'm²/Hz'}
+    for ax, name in zip(axes, ['roll', 'pitch', 'heave']):
+        ax.axvline(1 / blocks.Tp.mean(), color=GREY, ls='--', lw=1)
+        ax.set(xlabel='frequency [Hz]', ylabel=f'{name} PSD [{units[name]}]')
+        ax.set_title(name, loc='left')
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    fig.colorbar(sm, ax=axes, shrink=0.8, label='|relative wave heading| [°]')
+    return save(fig, '9_motion_spectra.png')
