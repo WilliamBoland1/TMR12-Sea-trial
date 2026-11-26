@@ -1,7 +1,7 @@
 """Unsupervised operating-state detection: Harbour, Transit or DP, found from the ship's own motion.
 
 No land or distance rules. Each 1-minute window is described by five numbers from the ship logs, and a
-Gaussian mixture model (GMM) groups similar windows into three clusters. The correct timeline (the phases
+k-means groups similar windows into three clusters. The correct timeline (the phases
 from data.phases(): quay = Harbour, station = DP, transit) is used only afterwards, to score the result.
 For comparison, a supervised random forest (forest.py) learns the correct timeline from the same five features.
 """
@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, adjusted_rand_score, precision_recall_fscore_support
-from sklearn.mixture import GaussianMixture
+from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 
 from tmr12 import data, eda
@@ -17,7 +17,6 @@ from tmr12 import data, eda
 WINDOW = '1min'      # one sample = one minute of data
 SMOOTH_MIN = 5       # a state lasts minutes: take the most common cluster over this many windows
 N_STATES = 3
-UNSURE = 0.9         # GMM certainty below this counts as unsure
 FEATURES = ['speed_kn', 'roll_std', 'pitch_std', 'heave_hs_m', 'turn_deg']
 UNITS = {'speed_kn': 'kn', 'roll_std': 'deg', 'pitch_std': 'deg', 'heave_hs_m': 'm', 'turn_deg': 'deg'}
 STATES = ['Harbour', 'DP', 'Transit']
@@ -49,7 +48,7 @@ def load_windows():
 
 
 def prepare(w):
-    """Log-transform (all five are skewed, with long tails) and standardise (GMM compares distances)."""
+    """Log-transform (all five are skewed, with long tails) and standardise (k-means compares distances)."""
     x = w[FEATURES].copy()
     x['turn_deg'] += 1                      # heading change is often 0, so use log(1 + x)
     return StandardScaler().fit_transform(np.log(x.clip(lower=1e-3)))
@@ -72,12 +71,11 @@ def smooth(states, days):
 
 
 def fit(w, seed=0):
-    """Cluster the windows. Adds: state (raw), state_smooth, prob (GMM certainty of its pick, 0-1)."""
+    """Cluster the windows. Adds: state (raw), state_smooth."""
     z = prepare(w)
-    gmm = GaussianMixture(N_STATES, n_init=5, random_state=seed).fit(z)
-    labels = gmm.predict(z)
+    labels = KMeans(N_STATES, n_init=10, random_state=seed).fit(z).labels_
     names = name_clusters(w, labels)
-    out = w.assign(state=pd.Series(labels).map(names).values, prob=gmm.predict_proba(z).max(axis=1))
+    out = w.assign(state=pd.Series(labels).map(names).values)
     out['state_smooth'] = smooth(out.state, out.day)
     return out
 
@@ -106,7 +104,7 @@ def check(out):
 
 def fig_timeline(out):
     """Per day: colour strips over local time, the correct timeline on top, then the random forest (if fitted)
-    and the clustering at the bottom. Black ticks mark minutes where the GMM is unsure of its pick."""
+    and the clustering at the bottom."""
     rows = [(c, label) for c, label in [('correct', 'Correct timeline'), ('forest_smooth', 'Random forest'),
                                         ('state_smooth', 'Clustering')] if c in out][::-1]   # bottom row first
     days = list(out.day.unique())
@@ -116,15 +114,12 @@ def fig_timeline(out):
         t = d.time.dt.tz_convert(data.TZ).dt.tz_localize(None)
         for y, (col, _) in enumerate(rows):
             ax.scatter(t, [y] * len(d), c=d[col].map(COLOURS).fillna('white'), marker='|', s=400, linewidths=2)
-        unsure = d.prob < UNSURE
-        ax.scatter(t[unsure], [-0.55] * unsure.sum(), marker='|', s=40, color='black')
         ax.set_yticks(range(len(rows)), [label for _, label in rows])
-        ax.set_ylim(-0.8, len(rows) - 0.5)
+        ax.set_ylim(-0.5, len(rows) - 0.5)
         ax.set_title(day, loc='left', fontsize=10)
         ax.grid(False)
     handles = [plt.Line2D([], [], color=c, lw=6, label=s) for s, c in COLOURS.items()]
-    handles.append(plt.Line2D([], [], color='black', marker='|', ls='', label=f'GMM unsure (p < {UNSURE:g})'))
-    axes[0, 0].legend(handles=handles, loc='lower right', bbox_to_anchor=(1, 1.15), ncol=4, fontsize=8, frameon=False)
+    axes[0, 0].legend(handles=handles, loc='lower right', bbox_to_anchor=(1, 1.15), ncol=3, fontsize=8, frameon=False)
     axes[-1, 0].set_xlabel('Local time')
     fig.tight_layout()
     return fig

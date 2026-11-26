@@ -1,5 +1,5 @@
 """Supervised comparison for the clustering: a random forest learns the correct state (Harbour / DP / Transit)
-from the same five motion features as the GMM in cluster.py."""
+from the same five motion features as the k-means clustering in cluster.py."""
 import matplotlib.pyplot as plt
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier

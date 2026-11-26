@@ -644,15 +644,15 @@ def page_states():
     acc = scores.accuracy
     step(8, "Can a model tell from the ship's motion whether it is in harbour, on DP or in transit?",
          'Here the ship is not told where it is. Each minute of the log is described by five numbers from its own '
-         'motion: speed, roll σ, pitch σ, heave 4σ and heading change. A Gaussian mixture model groups similar '
-         f'minutes into {cluster.N_STATES} states without any labels. The **correct timeline** (the phases from '
+         'motion: speed, roll σ, pitch σ, heave 4σ and heading change. **K-means** groups similar '
+         f'minutes into {cluster.N_STATES} states without any labels: each minute joins the nearest of '
+         f'{cluster.N_STATES} cluster centres. The **correct timeline** (the phases from '
          'step 2: quay = harbour, station = DP, transit) is used only afterwards, to score the result. '
          'For comparison, a supervised **random forest** learns the correct timeline from the same five numbers.',
          caption=day_caption(day))
     show_fig(cluster.fig_timeline(out[out.day == day]))
     st.caption(f'Top = correct timeline, middle = random forest, bottom = clustering (both as the most common '
-               f'state over {cluster.SMOOTH_MIN} min). Black ticks = minutes where the clustering is less than '
-               f'{cluster.UNSURE:.0%} sure.')
+               f'state over {cluster.SMOOTH_MIN} min).')
 
     c = st.columns(4)
     c[0].metric('Minutes right, all days', f"{acc['Clustering, smoothed']:.1%}", border=True)
@@ -698,6 +698,10 @@ def page_states():
 def page_conclusion():
     out, rf, scores, per_state, table = run_cluster()
     acc = scores.accuracy
+    off = table.stack()
+    off = off[[a != b for a, b in off.index]]
+    (true, pred), n = off.idxmax(), off.max()
+    rf_miss = ((out.correct == true) & (out.forest_smooth == pred)).sum()
     step(9, 'So, can a model tell what the ship is doing?',
          f"**Mostly, yes.** From its own motion alone, an unsupervised clustering labels "
          f"{acc['Clustering, smoothed']:.1%} of the minutes with the right operating state, and a supervised "
@@ -713,8 +717,8 @@ def page_conclusion():
         'side, so what a DP minute looks like depends on the weather that day.\n'
         f"4. **A model can label the states** (step 8): the clustering finds {per_state.loc['Harbour', 'recall']:.1%} "
         f"of the harbour minutes, {per_state.loc['DP', 'recall']:.1%} of the DP minutes and "
-        f"{per_state.loc['Transit', 'recall']:.1%} of the transit minutes. Most misses are calm DP minutes called "
-        'harbour, and the random forest makes the same mistake.\n\n'
+        f"{per_state.loc['Transit', 'recall']:.1%} of the transit minutes. The biggest miss is {n} {true} minutes "
+        f"called {pred}; the random forest makes that mistake in {rf_miss} minutes.\n\n"
         '#### Limits\n'
         '- The correct timeline is itself made by rules (speed, and the first and last stop of the day is the quay), '
         "not taken from the DP system's own log.\n"

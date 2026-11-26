@@ -1,6 +1,6 @@
 """Find the vessel's operating state (Harbour / DP / Transit) from its motion alone: python cluster.py
 
-Unsupervised: a Gaussian mixture model groups 1-minute windows of ship motion into three clusters.
+Unsupervised: k-means groups 1-minute windows of ship motion into three clusters.
 The correct timeline (rule-based phases) is used only to score the result.
 For comparison, a supervised random forest is trained on it (leave one day out). Writes figures and tables to reports/cluster/.
 Ship data folder: set SHIP_DIR as in eda.py.
@@ -37,7 +37,6 @@ if __name__ == '__main__':
     print('Performance against the correct timeline:')
     print(scores.round(3))
     print(per_state.round(3))
-    print(f'Windows where the GMM is unsure (p < {cluster.UNSURE:g}): {(out.prob < cluster.UNSURE).mean():.1%}')
     print(table)
 
     OUT.mkdir(parents=True, exist_ok=True)
