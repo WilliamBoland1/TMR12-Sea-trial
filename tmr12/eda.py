@@ -1,10 +1,15 @@
-"""Exploratory data analysis (EDA) of the RV Gunnerus DP trials, 30-31 Oct 2023.
+"""Exploratory data analysis (EDA) of the RV Gunnerus DP trials, 30 Oct - 3 Nov 2023.
 
 Focus: how the ship behaves while it keeps position on DP at the stations, and how that
 depends on the waves and wind measured by the nearest E39 buoy.
 
 Every plot function takes already-loaded data, saves one PNG in reports/eda/ and returns its path.
 The heavy lifting (loading, phases, heading blocks) is reused from tmr12/data.py.
+
+Two kinds of ship data are used:
+  - the 10 s summaries in data/processed/ (in git, all days): position, heading, speed, and n/mean/std
+    of roll, pitch and height per 10 s file;
+  - the raw 100 Hz files (not in git, only where available): needed for spectra and filtered heave.
 """
 from pathlib import Path
 
@@ -25,6 +30,7 @@ OUT = data.ROOT / 'reports' / 'eda'
 BLUE, ORANGE, AQUA, GREY = '#2a78d6', '#eb6834', '#1baf7a', '#8a8984'
 PHASE_COLOURS = {'Quay': GREY, 'Transit': BLUE, 'Station': ORANGE}
 BUOY_COLOURS = {'D': BLUE, 'A': ORANGE}
+DAY_COLOURS = {'2023-10-30': BLUE, '2023-10-31': ORANGE, '2023-11-02': AQUA, '2023-11-03': GREY}
 
 plt.rcParams.update({'figure.dpi': 110, 'savefig.dpi': 150, 'font.size': 9,
                      'axes.spines.top': False, 'axes.spines.right': False,
@@ -43,6 +49,26 @@ def save(fig, name):
     fig.savefig(path, bbox_inches='tight')
     plt.close(fig)
     return path
+
+
+def available_days():
+    """{'YYYY-MM-DD': raw day folder or None} for every day with a 10 s summary or raw files.
+    Days that are only in data/processed/ (the parquet files in git) get None: no raw 100 Hz data."""
+    raw = data.days() if data.RAW_SHIP.exists() else {}
+    processed = {f.stem.replace('ship_10s_', '') for f in data.PROCESSED.glob('ship_10s_*.parquet')}
+    return {day: raw.get(day) for day in sorted(set(raw) | processed)}
+
+
+def ship_checks(s, day_dir=None):
+    """data.ship_checks for one day. Without the raw files the number of CSV columns cannot be checked."""
+    if day_dir is not None:
+        return data.ship_checks(s, day_dir)
+    dt = s.time.diff().dt.total_seconds()
+    expected = round((s.time.iloc[-1] - s.time.iloc[0]).total_seconds() / 10) + 1
+    return {'files': len(s), 'expected': expected, 'complete_pct': 100 * len(s) / expected,
+            'min_samples_per_file': int(s.n.min()), 'max_step_s': dt.max(), 'gaps_over_11s': int((dt > 11).sum()),
+            'nan_values': int(s.isna().sum().sum()), 'out_of_range': data.out_of_range(s, data.SHIP_LIMITS),
+            'csv_columns': np.nan}
 
 
 def phase_kind(phase):
@@ -146,8 +172,11 @@ def dp_blocks(s, p, b, files=None, spectra=None):
     The heading blocks come from data.heading_blocks, using the buoy nearest to each station.
     Added here: footprint size (from the 10 s mean positions) and wind from the buoy.
     Stations further than MAX_BUOY_KM from every buoy keep their ship values, but get no waves/wind.
-    With the raw files (files = raw_files(day dir)) the wave-induced motion is also computed from the
-    100 Hz data of the whole block; spectra (a dict) then collects the spectra per block."""
+    With the raw files (files = raw_files(day dir)) the wave-induced motion is computed from the
+    100 Hz data of the whole block; spectra (a dict) then collects the spectra per block.
+    Without raw files the motion comes from the 10 s summaries: roll and pitch σ pooled over the block
+    (exact), heave 4σ from the variation inside each 10 s file (within 5 % of the raw value at buoy D
+    on 30-31 Oct, see the EDA section). motion_source says which one was used."""
     rows = []
     for st in p[p.phase.str.startswith('Station')].itertuples():
         short, km = nearest_buoy(st.lat, st.lon, b)
@@ -167,9 +196,12 @@ def dp_blocks(s, p, b, files=None, spectra=None):
                 row.update({k: np.nan for k in ['Hm0', 'Tp', 'Mdir', 'ThTp', 'rel_Mdir', 'rel_ThTp']})
             if files is not None:
                 motion, spec = raw_block_motion(raw_block(files, blk.start, blk.end))
-                row.update(motion)
+                row.update(motion, motion_source='raw 100 Hz')
                 if spectra is not None:
                     spectra[(blk.start, blk.end)] = spec
+            else:
+                row.update(roll_std_wave=blk.roll_std, pitch_std_wave=blk.pitch_std,
+                           heave_hs_wave=blk.heave_hs_m, motion_source='10 s files')
             rows.append({**row, 'buoy': short, 'buoy_km': km,
                          'footprint_r95_m': np.percentile(radius, 95),   # 95 % of positions inside this circle
                          'footprint_std_m': np.sqrt(north.var() + east.var()),
@@ -235,9 +267,13 @@ def fig_completeness(days):
 
 def fig_tracks(days, b):
     """Where the ship went each day, coloured by phase, with the buoy positions."""
-    fig, axes = plt.subplots(1, len(days), figsize=(5 * len(days), 4.2), squeeze=False)
+    ncols = min(2, len(days))
+    nrows = int(np.ceil(len(days) / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5.5 * ncols, 4.5 * nrows), squeeze=False)
+    for ax in axes.flat[len(days):]:
+        ax.set_visible(False)
     pos = data.buoy_positions(b)
-    for ax, (day, s) in zip(axes[0], days.items()):
+    for ax, (day, s) in zip(axes.flat, days.items()):
         for kind, colour in PHASE_COLOURS.items():
             g = s[s.kind == kind]
             ax.scatter(g.lon, g.lat, s=10 if kind == 'Station' else 3, color=colour, label=kind)
@@ -302,10 +338,11 @@ def fig_univariate(s_all):
 
 
 def fig_buoys(b, phases_by_day):
-    """Waves and wind at buoys D and A during the two trial days, ship stations shaded."""
+    """Waves and wind at buoys D and A on the trial days that have buoy data, ship stations shaded."""
     signals = [('Hm0', 'Hm0 [m]'), ('Tp', 'Tp [s]'), ('Mdir', 'wave dir. from [°]'),
                ('WindSpeed', 'wind [m/s]'), ('WindDirection', 'wind dir. from [°]')]
-    fig, axes = plt.subplots(len(signals), len(phases_by_day), figsize=(11, 9), sharex='col', squeeze=False)
+    fig, axes = plt.subplots(len(signals), len(phases_by_day), figsize=(4 * len(phases_by_day), 9), sharex='col',
+                             squeeze=False)
     for j, (day, p) in enumerate(phases_by_day.items()):
         lo, hi = p.start.min() - pd.Timedelta('1h'), p.end.max() + pd.Timedelta('1h')
         for i, (col, label) in enumerate(signals):
@@ -367,17 +404,18 @@ def fig_footprints(s_all, blocks):
 
 
 def fig_vs_heading(blocks):
-    """Bivariate: footprint, roll and pitch per heading block vs the relative wave heading."""
+    """Bivariate: footprint, roll, pitch and heave per heading block vs the relative wave heading.
+    Colour = day, circle = buoy D, triangle = buoy A. Marker size = block length."""
     cols = [('footprint_r95_m', 'footprint R95 [m]'), ('roll_std_wave', 'roll σ [°]'),
             ('pitch_std_wave', 'pitch σ [°]'), ('heave_hs_wave', 'heave 4σ [m]')]
     blocks = blocks[blocks.buoy != 'none']
     fig, axes = plt.subplots(2, 2, figsize=(9, 6.5))
     axes = axes.flatten()
     for ax, (col, label) in zip(axes, cols):
-        for short, colour in BUOY_COLOURS.items():
-            g = blocks[blocks.buoy == short]
-            ax.scatter(g.abs_rel_wave, g[col], s=g.minutes * 1.5, color=colour, alpha=0.8,
-                       edgecolor='white', lw=0.5, label=f'at buoy {short}')
+        for (short, day), g in blocks.groupby(['buoy', 'day']):
+            ax.scatter(g.abs_rel_wave, g[col], s=g.minutes * 1.5, color=DAY_COLOURS[day], alpha=0.8,
+                       marker='o' if short == 'D' else '^', edgecolor='white', lw=0.5,
+                       label=f"{pd.Timestamp(day):%-d %b}, buoy {short}")
         ax.set(xlabel='|relative wave heading| [°] (0 = head, 90 = beam)', ylabel=label, xlim=(-5, 185))
         ax.set_xticks([0, 45, 90, 135, 180])
     axes[0].legend(frameon=False)
@@ -409,9 +447,9 @@ def fig_correlation(blocks):
 
 
 def fig_spectra(blocks, spectra):
-    """Roll, pitch and heave spectra of the heading blocks at buoy D (from the raw 100 Hz data),
+    """Roll, pitch and heave spectra of the heading blocks at buoy D that have raw 100 Hz data,
     coloured by the relative wave heading. Dashed line: mean buoy peak period Tp."""
-    blocks = blocks[blocks.buoy == 'D']
+    blocks = blocks[(blocks.buoy == 'D') & (blocks.motion_source == 'raw 100 Hz')]
     fig, axes = plt.subplots(1, 3, figsize=(11, 3.4))
     cmap, norm = plt.get_cmap('viridis'), plt.Normalize(0, 180)
     for blk in blocks.itertuples():
@@ -432,11 +470,12 @@ def fig_spectra(blocks, spectra):
 
 def fig_missing(blocks):
     """Missing values in the heading-block table: one row per block, one column per variable.
-    Blocks with no buoy within MAX_BUOY_KM have no wave or wind data (missing by design, not at random)."""
-    cols = ['roll_std_wave', 'pitch_std_wave', 'heave_hs_wave', 'footprint_r95_m', 'Hm0', 'Tp', 'Mdir',
-            'wind_ms', 'wind_from']
+    Blocks with no buoy within MAX_BUOY_KM have no wave or wind data (missing by design, not at random).
+    Blocks without raw 100 Hz files have no peak period (heave_tp_s needs the spectrum)."""
+    cols = ['roll_std_wave', 'pitch_std_wave', 'heave_hs_wave', 'heave_tp_s', 'footprint_r95_m', 'Hm0', 'Tp',
+            'Mdir', 'wind_ms', 'wind_from']
     miss = blocks[cols].isna().values
-    fig, ax = plt.subplots(figsize=(6, 4.5))
+    fig, ax = plt.subplots(figsize=(6, max(4.5, 0.11 * len(blocks))))
     ax.imshow(miss, aspect='auto', cmap=matplotlib.colors.ListedColormap(['#e4e3df', ORANGE]), interpolation='none')
     ax.set_xticks(range(len(cols)), cols, rotation=45, ha='right')
     labels = [f"{pd.Timestamp(d).day} {pd.Timestamp(d):%b} {st.replace('Station ', 'S')}"

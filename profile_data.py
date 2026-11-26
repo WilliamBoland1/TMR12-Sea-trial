@@ -22,7 +22,7 @@ if __name__ == '__main__':
     OUT.mkdir(parents=True, exist_ok=True)
 
     minutes = []
-    for day in data.days():
+    for day in eda.available_days():
         s = data.load_day(day)
         m = eda.minute_stats(eda.add_phase_column(s, data.phases(s)))
         minutes.append(m.assign(time=m.time.dt.tz_localize(None)))   # the report wants naive time stamps
@@ -30,5 +30,5 @@ if __name__ == '__main__':
               'buoys_10min': data.load_buoys().assign(time=lambda b: b.time.dt.tz_localize(None)),
               'heading_blocks': pd.read_csv(eda.OUT / 'dp_heading_blocks.csv')}
     for name, df in tables.items():
-        ProfileReport(df, title=f'RV Gunnerus trial 30-31 Oct 2023: {name}', minimal=True).to_file(OUT / f'{name}.html')
+        ProfileReport(df, title=f'RV Gunnerus trial 30 Oct - 3 Nov 2023: {name}', minimal=True).to_file(OUT / f'{name}.html')
         print(OUT / f'{name}.html')

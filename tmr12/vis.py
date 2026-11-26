@@ -1,4 +1,4 @@
-"""Data visualisation for the DP part of the project (30-31 Oct 2023).
+"""Data visualisation for the DP part of the project (30 Oct - 3 Nov 2023; buoy comparisons 30 Oct - 2 Nov).
 
 Three figures, chosen for the project thesis on DP capability and DP footprints:
   1. Motion rose: roll, pitch and heave against the relative wave heading, drawn like a DP capability plot.
@@ -18,7 +18,7 @@ from tmr12 import data, eda
 
 OUT = data.ROOT / 'reports' / 'vis'
 NOISE_HS_M = 0.11   # heave 4σ measured at the quay: GNSS noise floor (EDA, 1-minute windows)
-DAY_COLOURS = {'2023-10-30': eda.BLUE, '2023-10-31': eda.ORANGE}
+DAY_COLOURS = eda.DAY_COLOURS
 
 
 def save(fig, name):
@@ -44,9 +44,8 @@ def fig_motion_rose(blocks):
     cols = [('roll_std_wave', 'roll σ [°]'), ('pitch_std_wave', 'pitch σ [°]'), ('heave_hs_wave', 'heave 4σ [m]')]
     fig, axes = plt.subplots(1, 3, figsize=(12, 4.3), subplot_kw={'projection': 'polar'})
     for ax, (col, label) in zip(axes, cols):
-        for day, colour in DAY_COLOURS.items():
-            g = blocks[blocks.day == day]
-            ax.scatter(np.radians(g.rel_Mdir), g[col], s=g.minutes * 3, color=colour, alpha=0.85,
+        for day, g in blocks.groupby('day'):
+            ax.scatter(np.radians(g.rel_Mdir), g[col], s=g.minutes * 3, color=DAY_COLOURS[day], alpha=0.85,
                        edgecolor='white', lw=0.5, label=pd.Timestamp(day).strftime('%-d %b'))
         ax.set_theta_zero_location('N')   # head seas at the top
         ax.set_theta_direction(-1)         # clockwise: waves from starboard to the right
@@ -54,7 +53,9 @@ def fig_motion_rose(blocks):
                           ['head', '45', 'beam\n(stb)', '135', 'following', '225', 'beam\n(port)', '315'])
         ax.set_rlim(0, blocks[col].max() * 1.1)
         ax.set_title(label, pad=18)
-    axes[0].legend(loc='lower left', bbox_to_anchor=(-0.25, -0.15), frameon=False, title='buoy D')
+    leg = axes[0].legend(loc='lower left', bbox_to_anchor=(-0.25, -0.15), frameon=False, title='buoy D')
+    for h in leg.legend_handles:
+        h.set_sizes([40])   # same marker size in the legend, whatever the block length
     fig.tight_layout()
     return save(fig, 'v1_motion_rose.png')
 
@@ -63,7 +64,8 @@ def fig_heave_vs_buoy(blocks, b):
     """Ship heave 4σ against buoy Hm0 per heading block, with uncertainty bars.
     Buoy bar: lowest to highest 10-min Hm0 during the block (the sea state changes in time and space).
     Ship bar: statistical uncertainty of a std estimated from N waves, about σ/sqrt(2N), N = duration / Tp.
-    Grey band: GNSS noise floor measured at the quay."""
+    Grey band: GNSS noise floor measured at the quay.
+    Filled markers: heave from the raw 100 Hz data; open markers: from the 10 s files (no raw data that day)."""
     blocks = blocks[blocks.buoy != 'none'].copy()
     lo, hi = [], []
     for blk in blocks.itertuples():
@@ -78,10 +80,12 @@ def fig_heave_vs_buoy(blocks, b):
     fig, ax = plt.subplots(figsize=(5.5, 5))
     ax.axhspan(0, NOISE_HS_M, color=eda.GREY, alpha=0.2, lw=0, label=f'GNSS noise floor ({NOISE_HS_M} m)')
     ax.plot([0, 1], [0, 1], color=eda.GREY, ls='--', lw=1, label='ship = buoy')
-    for short, colour in eda.BUOY_COLOURS.items():
-        g = blocks[blocks.buoy == short]
+    for (short, source), g in blocks.groupby(['buoy', 'motion_source']):
+        colour = eda.BUOY_COLOURS[short]
+        raw = source == 'raw 100 Hz'
         ax.errorbar(g.Hm0, g.heave_hs_wave, xerr=[g.Hm0 - g.hm0_lo, g.hm0_hi - g.Hm0], yerr=g.ship_err,
-                    fmt='o', ms=6, color=colour, ecolor=colour, elinewidth=1, capsize=2, label=f'buoy {short}')
+                    fmt='o', ms=6, color=colour, mfc=colour if raw else 'white', ecolor=colour, elinewidth=1,
+                    capsize=2, label=f"buoy {short}, {'100 Hz data' if raw else '10 s files'}")
     ax.set(xlim=(0, 0.85), ylim=(0, 0.85), aspect='equal',
            xlabel='buoy $H_{m0}$ [m]', ylabel='ship heave 4σ [m]')
     ax.legend(frameon=False, loc='upper left')

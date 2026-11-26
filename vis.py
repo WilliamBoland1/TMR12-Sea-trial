@@ -19,7 +19,7 @@ if __name__ == '__main__':
     b = data.load_buoys()
     blocks = vis.load_blocks()
     days = {}
-    for day in data.days():
+    for day in eda.available_days():
         s = data.load_day(day)
         days[day] = eda.add_phase_column(s, data.phases(s))
 
