@@ -3,11 +3,12 @@ import warnings
 from datetime import timedelta
 
 import altair as alt
+import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 from streamlit_folium import st_folium
 
-from tmr12 import data, maps, ml
+from tmr12 import cluster, data, maps
 
 st.set_page_config(page_title='TMR12 wave radar data', page_icon='🌊', layout='wide')
 alt.data_transformers.disable_max_rows()
@@ -27,8 +28,6 @@ BUOY_PARAMS = {'Hm0': 'Hm0, significant wave height [m]', 'Hm0a': 'Hm0a, low-fre
                'Tm02': 'Tm02, mean period [s]', 'Mdir': 'Mdir, mean direction, from [° true]',
                'ThTp': 'ThTp, direction at the peak, from [° true]', 'SprTp': 'SprTp, directional spread at the peak [°]'}
 RESPONSE = {'heave_hs_m': 'Ship heave 4σ [m]', 'roll_std': 'Ship roll σ [°]', 'pitch_std': 'Ship pitch σ [°]'}
-ML_FEATURES = {'heave_hs_m': 'Heave 4σ [m]', 'roll_std': 'Roll σ [°]', 'pitch_std': 'Pitch σ [°]',
-               'speed_kn': 'Speed [kn]'}
 
 
 # ---------- cached loading ----------
@@ -104,10 +103,11 @@ def load_buoy_blocks():
     return m.assign(short=m.buoy.str.split().str[1])
 
 
-@st.cache_data
-def run_ml(max_km, features, leaky):
-    m = load_buoy_blocks()
-    return ml.evaluate(m[m.dist_km <= max_km], list(features), leaky=leaky)
+@st.cache_data(show_spinner='Clustering one-minute windows...')
+def run_cluster():
+    """Step 8: every 1-minute window with its cluster, and its scores against the correct timeline."""
+    out, tree = cluster.fit_tree(cluster.fit(cluster.load_windows()))
+    return out, tree, *cluster.check(out)
 
 
 @st.cache_data
@@ -188,6 +188,11 @@ def ship_buoy_scatter(m, resp='heave_hs_m'):
     return alt.hconcat(*charts)
 
 
+def show_fig(fig):
+    st.pyplot(fig)
+    plt.close(fig)   # one new matplotlib figure per rerun, so close it
+
+
 def show_table(df):
     df = df.copy()
     for c in ('start', 'end'):
@@ -240,12 +245,14 @@ def next_step(n):
 # ---------- the 9 steps ----------
 
 def page_intro():
-    step(1, "Can the ship's own motion tell us how big the waves are?",
+    step(1, "Can we tell from the ship's own motion what it is doing: in harbour, on DP or in transit?",
          'In week 44 of 2023 the research vessel **RV Gunnerus** tested a wave radar off Ålesund and Kristiansund. '
          'The whole time, it logged its own motion (position, heading, roll, pitch and height) **100 times a '
          'second**. In the fjords nearby, the **E39 wave buoys** measured the waves every 10 minutes.\n\n'
-         'A ship moves more in bigger waves. If that link is strong enough, the ship itself works as a wave sensor, '
-         'and gives an independent check on what the wave radar should report.')
+         '**Why it matters:** to validate real operations against simulations, you have to compare like with like. '
+         'A ship lying in harbour, holding position on dynamic positioning (DP) or in transit behaves differently '
+         'and is simulated differently, so every part of the log needs the right operating state. If a model can '
+         'find that state from the motion log alone, the comparison can be done without labelling by hand.')
     a, b, m = load_all(), load_buoys(), load_buoy_blocks()
     c = st.columns(4)
     c[0].metric('Trial days', len(DAYS), border=True)
@@ -631,109 +638,95 @@ def page_heading():
     next_step(7)
 
 
-def page_ml():
-    step(8, "Can a model turn the ship's motion into wave height?",
-         "We train models to predict the buoy's Hm0 from the ship's motion in each 10-minute block (heave, roll, "
-         'pitch, speed). To be fair, every model is tested on a day it never saw: train on the other days, test on '
-         "the one left out. The benchmark needs no training at all: just read the ship's heave 4σ as the wave height.")
-    with st.expander('Try it yourself: change the data, features or validation'):
-        c1, c2, c3 = st.columns([1, 1.4, 1])
-        max_km = c1.slider('Only blocks within this distance of their buoy [km]', 0.5, 50.0, MAX_KM, 0.5, key='ml-km')
-        feats = c2.multiselect('Features (ship motion per 10-min block)', ml.FEATURES, default=ml.FEATURES,
-                               format_func=ML_FEATURES.get, key='ml-feats')
-        leaky = c3.radio('Validation', ['Leave one day out', 'Random 5-fold (leaky)'], key='ml-cv',
-                         help='Neighbouring 10-min blocks are almost identical. A random split puts them in both train '
-                              'and test, which flatters the models. Leave-one-day-out tests on a day the model never '
-                              'saw.') != 'Leave one day out'
-    m = load_buoy_blocks()
-    m = m[m.dist_km <= max_km]
-    if not feats or m.day.nunique() < 2:
-        st.info('Pick at least one feature and a distance that includes at least two days.')
-        return next_step(8)
-    metrics, pred, imp = run_ml(max_km, tuple(feats), leaky)
+def page_states():
+    day = st.session_state.day
+    out, tree, scores, per_state, table = run_cluster()
+    acc = scores.accuracy
+    step(8, "Can a model tell from the ship's motion whether it is in harbour, on DP or in transit?",
+         'Here the ship is not told where it is. Each minute of the log is described by five numbers from its own '
+         'motion: speed, roll σ, pitch σ, heave 4σ and heading change. A Gaussian mixture model groups similar '
+         f'minutes into {cluster.N_STATES} states without any labels. The **correct timeline** (the phases from '
+         'step 2: quay = harbour, station = DP, transit) is used only afterwards, to score the result. '
+         'For comparison, a supervised **decision tree** learns the correct timeline from the same five numbers.',
+         caption=day_caption(day))
+    show_fig(cluster.fig_timeline(out[out.day == day]))
+    st.caption(f'Top = correct timeline, middle = decision tree, bottom = clustering (both as the most common '
+               f'state over {cluster.SMOOTH_MIN} min). Black ticks = minutes where the clustering is less than '
+               f'{cluster.UNSURE:.0%} sure.')
 
-    st.markdown('**Average error on the held-out day** (MAE, metres of Hm0, lower is better)')
-    cols = st.columns(len(metrics))
-    for col, r in zip(cols, metrics.itertuples()):
-        col.metric(r.model, f'{r.MAE_m:.2f} m', border=True)
+    c = st.columns(4)
+    c[0].metric('Minutes right, all days', f"{acc['Clustering, smoothed']:.1%}", border=True)
+    for col, s in zip(c[1:], cluster.STATES):
+        col.metric(f'{s} minutes found', f"{per_state.loc[s, 'recall']:.1%}", border=True,
+                   help=f"{table.loc[s, s]} of {per_state.loc[s, 'minutes']} correct {s} minutes")
+    off = table.stack()
+    off = off[[a != b for a, b in off.index]]
+    (true, pred), n = off.idxmax(), off.max()
+    tree_miss = ((out.correct == true) & (out.tree_smooth == pred)).sum()
+    takeaway(f"Mostly yes. The clustering gets {acc['Clustering, smoothed']:.1%} of all minutes right "
+             f"without being told where the ship is. The biggest error: {n} {true} minutes called {pred}. "
+             f"The supervised decision tree, which is told the answers for the other days, gets "
+             f"{acc['Decision tree, smoothed']:.1%}, and it also calls {tree_miss} {true} minutes {pred}.")
 
-    lo, hi = min(0.0, float(pred.predicted.min())), float(max(pred.Hm0.max(), pred.predicted.max())) * 1.05
-    one = alt.Chart(pd.DataFrame({'x': [lo, hi]})).mark_line(color=GREY, strokeDash=[4, 4]).encode(x='x:Q', y='x:Q')
-    charts = []
-    for name, g in pred.groupby('model', sort=False):
-        pts = alt.Chart(g[['day', 'local', 'short', 'dist_km', 'Hm0', 'predicted']]).mark_circle(
-            size=40, opacity=0.8, color=BLUE, stroke=SURFACE, strokeWidth=1).encode(
-            x=alt.X('Hm0:Q', title='Measured buoy Hm0 [m]', scale=alt.Scale(domain=[lo, hi])),
-            y=alt.Y('predicted:Q', title='Predicted Hm0 [m]', scale=alt.Scale(domain=[lo, hi])),
-            tooltip=['day', alt.Tooltip('local:T', format='%H:%M', title='block end'),
-                     alt.Tooltip('short:N', title='buoy'), alt.Tooltip('dist_km:Q', format='.1f'),
-                     alt.Tooltip('Hm0:Q', format='.2f'), alt.Tooltip('predicted:Q', format='.2f')])
-        charts.append(alt.layer(one, pts).properties(width=200, height=200,
-                                                     title=alt.Title(name, anchor='start', fontSize=12)))
-    st.altair_chart(alt.hconcat(*charts))
-    st.caption('Dashed line = perfect estimate. Points above it overestimate the waves, points below underestimate.')
-
-    by = metrics.set_index('model').MAE_m
-    best = by.drop([ml.AS_IS, 'Mean (baseline)']).idxmin()
-    if leaky:
-        st.warning('Random split: near-identical neighbouring blocks end up in both training and test data, so these '
-                   'scores look better than they really are. Switch back to "Leave one day out" for the honest result.')
-    elif by[ml.AS_IS] <= by[best]:
-        takeaway(f"No, the simplest approach wins. Reading the ship's heave 4σ directly as Hm0 is off by "
-                 f'{by[ml.AS_IS]:.2f} m on average; the best trained model ({best.lower()}) by {by[best]:.2f} m. '
-                 'With only a few days, each mixing two sites, the models learn *where* the ship was rather than the '
-                 'waves, and that fails on a day they have not seen. More days close to a buoy are needed before a '
-                 'model can beat the simple rule.')
-    else:
-        takeaway(f"With these settings the {best.lower()} beats reading heave 4σ directly ({by[best]:.2f} vs "
-                 f'{by[ml.AS_IS]:.2f} m average error). With the default settings it does not; check how many blocks '
-                 'and days are left before trusting this.')
-
-    with st.expander('Show details: all scores and what the random forest relies on'):
-        st.caption(' · '.join(f'{d}: {n} blocks' for d, n in m.groupby('day').size().items())
-                   + f' · target = Hm0 of the nearest buoy with data ({", ".join(sorted(m.short.unique()))})')
-        show_table(metrics)
-        st.caption('MAE / RMSE in metres of Hm0. R² below 0 = worse than always predicting the overall mean. '
-                   f'"{ml.AS_IS}" is not a model: it reads the ship\'s heave 4σ directly as Hm0, the physical reference '
-                   'to beat. Each day mixes two sites (exposed D, sheltered A), and on 2 Nov the only buoy with data, '
-                   'A, was 4–8 km from the ship, so a model tested on that day is graded against the wrong sea.')
-        st.markdown('**What the random forest relies on**')
-        st.altair_chart(alt.Chart(imp.assign(label=imp.feature.map(ML_FEATURES))).mark_bar(
-            color=BLUE, size=18, cornerRadiusEnd=4).encode(
-            x=alt.X('importance:Q', title='Drop in R² when the feature is shuffled'),
-            y=alt.Y('label:N', sort='-x', title=None),
-            tooltip=[alt.Tooltip('label:N', title='feature'), alt.Tooltip('importance:Q', format='.3f'),
-                     alt.Tooltip('std:Q', format='.3f')],
-        ).properties(width=480, height=alt.Step(30)), width='content')
-        st.caption('Permutation importance of a forest fitted on all selected blocks (training data, so indicative '
-                   'only). Caveats: few blocks from 2–4 days, each day has its own sea state, the buoy can be several '
-                   'km from the ship, and part of the heave 4σ is GNSS noise.')
+    with st.expander('Show details: scores, confusion table, inputs per state, the decision tree'):
+        st.markdown('**Overall scores** (raw = minute by minute, smoothed = most common state over '
+                    f'{cluster.SMOOTH_MIN} min)')
+        st.dataframe(scores.round(2))
+        st.caption('Accuracy = share of minutes with the right state. ARI = adjusted Rand index, how well the two '
+                   'timelines group the minutes the same way, whatever the names (1 = identical, 0 = random).')
+        st.markdown('**Clustering per state** (smoothed)')
+        st.dataframe(per_state.round(2))
+        st.caption('Recall = share of the correct minutes of this state that the model found. Precision = share of '
+                   'the minutes the model gave this state that are right. F1 = the two combined. Minutes = how many '
+                   'minutes of this state the correct timeline has.')
+        st.markdown('**Correct timeline (rows) vs clustering (columns)**, minutes')
+        st.dataframe(table)
+        show_fig(cluster.fig_features(out))
+        st.markdown('Speed is needed to separate transit from DP.\n\n'
+                    'In calm, sheltered water DP and harbour look the same from motion alone, so the model calls '
+                    'such DP minutes harbour (for example 31 Oct, station 2).')
+        st.markdown('**The decision tree** (supervised)')
+        show_fig(cluster.fig_tree(tree))
+        st.caption(f'Each day is predicted by a tree trained on the correct timeline of the other '
+                   f'{out.day.nunique() - 1} days only, so it is always tested on a day it never saw. The tree shown '
+                   f'here is fitted on all days. Read it top to bottom: each box asks one yes/no question (left = '
+                   f'yes), and the colour is the state it predicts. Its first question is about '
+                   f'{cluster.FEATURES[tree.tree_.feature[0]]}.')
     next_step(8)
 
 
 def page_conclusion():
-    step(9, 'So, can the ship measure the waves?',
-         "**Roughly, yes.** In the small waves of this trial (0.2–0.7 m), the ship's heave gives the wave height to "
-         'within about 0.12 m on average. A trained model did not do better with this little data.')
+    out, tree, scores, per_state, table = run_cluster()
+    acc = scores.accuracy
+    step(9, 'So, can a model tell what the ship is doing?',
+         f"**Mostly, yes.** From its own motion alone, an unsupervised clustering labels "
+         f"{acc['Clustering, smoothed']:.1%} of the minutes with the right operating state, and a supervised "
+         f"decision tree {acc['Decision tree, smoothed']:.1%}. A timeline like this tells you which part of a real "
+         'operation to compare with which simulation.')
     st.markdown(
         '#### What each step showed\n'
-        '1. **The data is solid, with known limits** (step 3): complete logs, but the GNSS height updates only about '
-        '10 times a second and has a noise floor of about 0.15 m (4σ).\n'
-        '2. **The ship moves most when it lies still at a station** (step 4), and more on rougher days.\n'
-        '3. **Ship heave follows wave height** (r ≈ 0.73, step 6), but the comparison is tangled up with *where* the '
-        'ship was: big waves only at buoy D, small only at A, and on 2 Nov the buoy was 6–7 km away.\n'
-        '4. **Wave direction matters** (step 7): where the buoy was close (31 Oct, D), the ship rolled most with '
-        'waves from the side.\n'
-        '5. **Simple beats clever** (step 8): reading heave 4σ directly as Hm0 (error ≈ 0.12 m) beat the trained '
-        'models on unseen days.\n\n'
+        '1. **The data is usable, with known limits** (step 3): the ship logs are complete, and the sensor limits are '
+        'known.\n'
+        '2. **Each state moves differently** (step 4): almost still in harbour, a little in transit, most on DP at '
+        'the stations. That difference is what the models use.\n'
+        '3. **The sea state matters** (steps 5 to 7): the ship moves more in bigger waves and with waves from the '
+        'side, so what a DP minute looks like depends on the weather that day.\n'
+        f"4. **A model can label the states** (step 8): the clustering finds {per_state.loc['Harbour', 'recall']:.1%} "
+        f"of the harbour minutes, {per_state.loc['DP', 'recall']:.1%} of the DP minutes and "
+        f"{per_state.loc['Transit', 'recall']:.1%} of the transit minutes. Most misses are calm DP minutes called "
+        'harbour, and the decision tree makes the same mistake.\n\n'
         '#### Limits\n'
-        '- Only three days have a buoy within 10 km, and the waves were small.\n'
-        '- The buoys were often kilometres from the ship, so they did not always measure the same sea.\n'
+        '- The correct timeline is itself made by rules (speed, and the first and last stop of the day is the quay), '
+        "not taken from the DP system's own log.\n"
+        '- In calm, sheltered water, DP and harbour look the same from motion alone.\n'
+        f'- Only {len(DAYS)} days from one ship.\n'
         '- Several ship CSV columns are undocumented; their meaning is inferred from the data.\n\n'
         '#### Next steps\n'
-        "- Compare with the wave radar's own output.\n"
-        '- Sail next to a buoy for longer, on more days and in bigger waves.\n'
-        '- Use the full 100 Hz signals (wave spectra) instead of 10 s summaries.')
+        "- Check the timeline against the DP system's own log or the bridge log.\n"
+        '- Test the model on more days and on other ships.\n'
+        '- Tell calm DP from harbour: add a signal such as thruster use, if it is logged, or let the model know that '
+        'states last for a while (a hidden Markov model).\n'
+        '- Use the timeline to pick the matching simulation case for each part of a voyage.')
 
 
 # ---------- app ----------
@@ -742,16 +735,16 @@ STEPS = [  # (page, title, icon, what it answers): the story, in order
     (page_intro, 'The question', '❓', ''),
     (page_day, 'One day at sea', '🗺️', 'what the ship data looks like for a single day'),
     (page_quality, 'Can we trust the data?', '✅', 'checks for gaps, bad values and sensor limits'),
-    (page_ship, 'How the ship moves', '🚢', 'roll, pitch and heave across days and phases'),
-    (page_waves, 'The waves at the buoys', '🌊', 'what the buoys measured'),
+    (page_ship, 'How the ship moves', '🚢', 'roll, pitch and heave in each operating state'),
+    (page_waves, 'The waves at the buoys', '🌊', 'the sea state the ship worked in'),
     (page_ship_vs_buoy, 'Ship vs buoy', '⚖️', 'does the ship move more when the waves are bigger?'),
     (page_heading, 'Heading vs waves', '🧭', 'does it matter which way the waves hit the ship?'),
-    (page_ml, 'Machine learning', '🤖', 'can a model turn ship motion into wave height?'),
+    (page_states, 'Machine learning: operating state', '🤖', 'can a model tell harbour, DP and transit apart?'),
     (page_conclusion, 'What we learned', '🏁', 'the answer, and its limits'),
 ]
 PAGES = [st.Page(f, title=f'{i}. {t}', icon=icon, default=i == 1) for i, (f, t, icon, _) in enumerate(STEPS, 1)]
 
-st.sidebar.selectbox('Day (used in steps 2, 6, 7)', list(DAYS), key='day',
+st.sidebar.selectbox('Day (used in steps 2, 6, 7, 8)', list(DAYS), key='day',
                      format_func=lambda d: f'{pd.Timestamp(d):%a %d %b %Y}')
 nav = st.navigation(PAGES)
 st.sidebar.caption('Buoy data from the Norwegian Meteorological Institute (NLOD / CC BY 3.0 NO). '

@@ -1,5 +1,5 @@
 # Data (raw ship/buoy files ~4 GB + generated parquet)
-data/
+/data/raw/
 
 # Documents
 docs/
