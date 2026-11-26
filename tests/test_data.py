@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from tmr12 import data, ml  # noqa: E402
+from tmr12 import data  # noqa: E402
 
 
 def fake_day(speed, heading):
@@ -83,16 +83,6 @@ def test_quality_checks():
                                     buoy_rows('A', t + pd.Timedelta('2D'), 62.4, 6.0)]))
     q = q.set_index(['buoy', 'day'])
     assert q.loc[('B', '2023-11-02'), 'records'] == 0 and q.loc[('B', '2023-10-31'), 'coverage_pct'] == 50, q
-
-
-def test_ml():
-    rng = np.random.default_rng(0)
-    x = np.r_[rng.uniform(0.1, 0.4, 40), rng.uniform(0.3, 0.7, 40), rng.uniform(0.5, 0.9, 40)]
-    df = pd.DataFrame({'day': np.repeat(['d1', 'd2', 'd3'], 40), 'heave_hs_m': x,
-                       'Hm0': 0.5 * x + rng.normal(0, 0.01, 120)})
-    m = ml.evaluate(df, ['heave_hs_m'])[0].set_index('model')
-    assert m.loc['Linear regression', 'R2'] > 0.9, m
-    assert m.loc['Linear regression', 'MAE_m'] < m.loc['Mean (baseline)', 'MAE_m'], m
 
 
 if __name__ == '__main__':

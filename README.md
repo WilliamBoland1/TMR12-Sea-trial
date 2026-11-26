@@ -1,20 +1,20 @@
-# TMR12 – RV Gunnerus wave-radar trial, week 44 2023
+# TMR12 – RV Gunnerus operating state from ship motion, week 44 2023
 
-Explore the ship motion logs from RV Gunnerus (30 Oct, 31 Oct, 2 Nov, 3 Nov 2023) on a map, and compare them with the E39 wave buoys outside Ålesund (A, B, C, D, F) and in Halsafjorden (G).
+Can we tell from the ship's own motion what it is doing: in harbour, on DP or in transit? To validate real operations against simulations you have to compare like with like, so every part of a voyage needs the right operating state. This project explores the RV Gunnerus motion logs (30 Oct, 31 Oct, 2 Nov, 3 Nov 2023), puts them next to the E39 wave buoys outside Ålesund (A, B, C, D, F) and in Halsafjorden (G) for the sea state, and builds models that find the operating state from the motion alone.
 
 ## The project in 9 steps
 
 The app (`streamlit run app.py`) tells the same story, one step per page. Each page has the question, one main plot, a takeaway, and a collapsed "Show details" section.
 
-1. **The question:** can the ship's own motion tell us how big the waves are?
+1. **The question:** can the ship's own motion tell us whether it is in harbour, on DP or in transit, and why that matters for comparing real operations with simulations.
 2. **One day at sea:** what does the data look like? The ship sails from the quay to a few stations and back, and moves most at the stations.
 3. **Can we trust the data?** The ship logs are complete. Limits: GNSS height updates only ~10×/s, it has a noise floor of ~0.15 m (4σ), and buoys C, D and F have no wave data in November.
-4. **How the ship moves:** almost still at the quay, a little in transit, most at the stations.
+4. **How the ship moves:** almost still at the quay, a little in transit, most at the stations. Each state moves differently, which is what the models use.
 5. **The waves at the buoys:** small waves. Exposed buoy D had about 0.6–0.7 m, sheltered A and B about 0.2 m.
 6. **Ship vs buoy:** more waves give more heave (r ≈ 0.73), but this is tangled up with the site (D vs A) and with distance to the buoy.
 7. **Heading vs waves:** where the buoy was close (31 Oct, D), the ship rolled most with waves from the side.
-8. **Machine learning:** reading heave 4σ directly as Hm0 (error ≈ 0.12 m) beats trained models on an unseen day.
-9. **What we learned:** roughly yes, the ship can measure these waves, plus the limits and next steps.
+8. **Machine learning: operating state:** an unsupervised clustering of 1-minute windows (`python cluster.py`), scored against the correct timeline (the rule-based phases from step 2) and compared with a supervised decision tree. Both get most minutes right; calm DP minutes look like harbour.
+9. **What we learned:** mostly yes, a model can label the operating state from motion alone, plus the limits and next steps.
 
 ## Run
 
@@ -36,14 +36,15 @@ In VS Code, pick `.venv` via *Python: Select Interpreter*.
 app.py              Streamlit UI: the 9 steps
 main.py             CLI: processed data + PNG reports
 tmr12/data.py       loading, 10 s summaries, phases, 10-min blocks, heading blocks, buoys, quality checks
-tmr12/ml.py         ship-as-a-wave-buoy models (scikit-learn)
+tmr12/cluster.py    operating state (Harbour / DP / Transit) from motion: GMM clustering + decision tree
+cluster.py          CLI: runs the clustering, writes reports/cluster/
 tmr12/maps.py       folium map
 tmr12/report.py     static PNG overview
 data/raw/ship/      30/, 31/, 02/, 03/  ->  <hh>/<YYYYMMDDhhmmss>.csv
 data/raw/buoys/     E39 buoy subset (+ cut_buoys.py that made it)
 data/processed/     generated, safe to delete
 reports/            generated PNGs
-docs/               test program
+docs/               test program; ml_choices.md = every ML choice and why
 tests/              self-checks
 ```
 
