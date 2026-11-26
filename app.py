@@ -8,7 +8,7 @@ import pandas as pd
 import streamlit as st
 from streamlit_folium import st_folium
 
-from tmr12 import cluster, data, maps
+from tmr12 import cluster, data, forest, maps
 
 st.set_page_config(page_title='TMR12 wave radar data', page_icon='🌊', layout='wide')
 alt.data_transformers.disable_max_rows()
@@ -106,8 +106,8 @@ def load_buoy_blocks():
 @st.cache_data(show_spinner='Clustering one-minute windows...')
 def run_cluster():
     """Step 8: every 1-minute window with its cluster, and its scores against the correct timeline."""
-    out, tree = cluster.fit_tree(cluster.fit(cluster.load_windows()))
-    return out, tree, *cluster.check(out)
+    out, rf = forest.fit_forest(cluster.fit(cluster.load_windows()))
+    return out, rf, *cluster.check(out)
 
 
 @st.cache_data
@@ -640,17 +640,17 @@ def page_heading():
 
 def page_states():
     day = st.session_state.day
-    out, tree, scores, per_state, table = run_cluster()
+    out, rf, scores, per_state, table = run_cluster()
     acc = scores.accuracy
     step(8, "Can a model tell from the ship's motion whether it is in harbour, on DP or in transit?",
          'Here the ship is not told where it is. Each minute of the log is described by five numbers from its own '
          'motion: speed, roll σ, pitch σ, heave 4σ and heading change. A Gaussian mixture model groups similar '
          f'minutes into {cluster.N_STATES} states without any labels. The **correct timeline** (the phases from '
          'step 2: quay = harbour, station = DP, transit) is used only afterwards, to score the result. '
-         'For comparison, a supervised **decision tree** learns the correct timeline from the same five numbers.',
+         'For comparison, a supervised **random forest** learns the correct timeline from the same five numbers.',
          caption=day_caption(day))
     show_fig(cluster.fig_timeline(out[out.day == day]))
-    st.caption(f'Top = correct timeline, middle = decision tree, bottom = clustering (both as the most common '
+    st.caption(f'Top = correct timeline, middle = random forest, bottom = clustering (both as the most common '
                f'state over {cluster.SMOOTH_MIN} min). Black ticks = minutes where the clustering is less than '
                f'{cluster.UNSURE:.0%} sure.')
 
@@ -662,13 +662,13 @@ def page_states():
     off = table.stack()
     off = off[[a != b for a, b in off.index]]
     (true, pred), n = off.idxmax(), off.max()
-    tree_miss = ((out.correct == true) & (out.tree_smooth == pred)).sum()
+    rf_miss = ((out.correct == true) & (out.forest_smooth == pred)).sum()
     takeaway(f"Mostly yes. The clustering gets {acc['Clustering, smoothed']:.1%} of all minutes right "
              f"without being told where the ship is. The biggest error: {n} {true} minutes called {pred}. "
-             f"The supervised decision tree, which is told the answers for the other days, gets "
-             f"{acc['Decision tree, smoothed']:.1%}, and it also calls {tree_miss} {true} minutes {pred}.")
+             f"The supervised random forest, which is told the answers for the other days, gets "
+             f"{acc['Random forest, smoothed']:.1%}, and it also calls {rf_miss} {true} minutes {pred}.")
 
-    with st.expander('Show details: scores, confusion table, inputs per state, the decision tree'):
+    with st.expander('Show details: scores, confusion table, inputs per state, the random forest'):
         st.markdown('**Overall scores** (raw = minute by minute, smoothed = most common state over '
                     f'{cluster.SMOOTH_MIN} min)')
         st.dataframe(scores.round(2))
@@ -685,23 +685,23 @@ def page_states():
         st.markdown('Speed is needed to separate transit from DP.\n\n'
                     'In calm, sheltered water DP and harbour look the same from motion alone, so the model calls '
                     'such DP minutes harbour (for example 31 Oct, station 2).')
-        st.markdown('**The decision tree** (supervised)')
-        show_fig(cluster.fig_tree(tree))
-        st.caption(f'Each day is predicted by a tree trained on the correct timeline of the other '
-                   f'{out.day.nunique() - 1} days only, so it is always tested on a day it never saw. The tree shown '
-                   f'here is fitted on all days. Read it top to bottom: each box asks one yes/no question (left = '
-                   f'yes), and the colour is the state it predicts. Its first question is about '
-                   f'{cluster.FEATURES[tree.tree_.feature[0]]}.')
+        st.markdown('**The random forest** (supervised)')
+        show_fig(forest.fig_importance(rf))
+        st.caption(f'{forest.N_TREES} decision trees, each trained on a random sample of minutes and features, vote '
+                   f'on the state. Each day is predicted by a forest trained on the correct timeline of the other '
+                   f'{out.day.nunique() - 1} days only, so it is always tested on a day it never saw. The bars show '
+                   f'how much each input helps the forest fitted on all days; the most useful is '
+                   f'{cluster.FEATURES[rf.feature_importances_.argmax()]}.')
     next_step(8)
 
 
 def page_conclusion():
-    out, tree, scores, per_state, table = run_cluster()
+    out, rf, scores, per_state, table = run_cluster()
     acc = scores.accuracy
     step(9, 'So, can a model tell what the ship is doing?',
          f"**Mostly, yes.** From its own motion alone, an unsupervised clustering labels "
          f"{acc['Clustering, smoothed']:.1%} of the minutes with the right operating state, and a supervised "
-         f"decision tree {acc['Decision tree, smoothed']:.1%}. A timeline like this tells you which part of a real "
+         f"random forest {acc['Random forest, smoothed']:.1%}. A timeline like this tells you which part of a real "
          'operation to compare with which simulation.')
     st.markdown(
         '#### What each step showed\n'
@@ -714,7 +714,7 @@ def page_conclusion():
         f"4. **A model can label the states** (step 8): the clustering finds {per_state.loc['Harbour', 'recall']:.1%} "
         f"of the harbour minutes, {per_state.loc['DP', 'recall']:.1%} of the DP minutes and "
         f"{per_state.loc['Transit', 'recall']:.1%} of the transit minutes. Most misses are calm DP minutes called "
-        'harbour, and the decision tree makes the same mistake.\n\n'
+        'harbour, and the random forest makes the same mistake.\n\n'
         '#### Limits\n'
         '- The correct timeline is itself made by rules (speed, and the first and last stop of the day is the quay), '
         "not taken from the DP system's own log.\n"
