@@ -4,6 +4,7 @@ Three figures, chosen for the project thesis on DP capability and DP footprints:
   1. Motion rose: roll, pitch and heave against the relative wave heading, drawn like a DP capability plot.
   2. Ship heave against buoy Hm0 with uncertainty bars: how far the ship can be used as a wave sensor.
   3. Two time scales on DP: slow position excursions (what DP controls) next to fast wave motion (what it does not).
+  4. Pair plot and 5. parallel coordinates of the heading blocks: the multidimensional plots from the course lab.
 
 Reads reports/eda/dp_heading_blocks.csv, so run eda.py first. Figures go to reports/vis/.
 """
@@ -118,3 +119,51 @@ def fig_two_time_scales(blocks, days):
     axes[0, 1].legend(frameon=False, ncol=2, loc='upper right')
     fig.tight_layout()
     return save(fig, 'v3_two_time_scales.png')
+
+
+WAVE_SECTOR = {'head': (0, 45), 'beam': (45, 135), 'following': (135, 181)}
+
+
+def sector(abs_rel):
+    """Relative wave direction as a class: head (0-45°), beam (45-135°) or following (135-180°) seas."""
+    for name, (lo, hi) in WAVE_SECTOR.items():
+        if lo <= abs_rel < hi:
+            return name
+
+
+def fig_pairplot(blocks):
+    """Pair plot (seaborn) of the main block variables, coloured by wave sector: every pair of variables
+    as a scatter plot, and each variable's distribution on the diagonal."""
+    import seaborn as sns
+    cols = {'Hm0': 'Hm0 [m]', 'roll_std_wave': 'roll σ [°]', 'pitch_std_wave': 'pitch σ [°]',
+            'heave_hs_wave': 'heave 4σ [m]', 'footprint_r95_m': 'R95 [m]'}
+    d = blocks[blocks.buoy != 'none'].copy()
+    d['waves'] = d.abs_rel_wave.map(sector)
+    d = d[list(cols) + ['waves']].rename(columns=cols)
+    palette = {'head': eda.BLUE, 'beam': eda.ORANGE, 'following': eda.AQUA}
+    g = sns.pairplot(d, hue='waves', palette=palette, hue_order=list(palette), corner=True,
+                     diag_kind='hist', plot_kws={'s': 30, 'edgecolor': 'white'}, height=1.7)
+    path = OUT / 'v4_pairplot.png'
+    OUT.mkdir(parents=True, exist_ok=True)
+    g.savefig(path, dpi=150)
+    plt.close(g.figure)
+    return path
+
+
+def fig_parallel(blocks):
+    """Parallel coordinates (pandas.plotting): one line per heading block through all variables,
+    each scaled to 0-1, coloured by wave sector."""
+    from pandas.plotting import parallel_coordinates
+    cols = ['Hm0', 'Tp', 'wind_ms', 'roll_std_wave', 'pitch_std_wave', 'heave_hs_wave', 'footprint_r95_m']
+    d = blocks[blocks.buoy != 'none'].copy()
+    scaled = (d[cols] - d[cols].min()) / (d[cols].max() - d[cols].min())
+    scaled['waves'] = d.abs_rel_wave.map(sector)
+    palette = {'head': eda.BLUE, 'beam': eda.ORANGE, 'following': eda.AQUA}
+    order = [w for w in palette if w in set(scaled.waves)]
+    scaled = scaled.sort_values('waves', key=lambda w: w.map(order.index))   # classes are coloured in this order
+    fig, ax = plt.subplots(figsize=(10, 4))
+    parallel_coordinates(scaled, 'waves', ax=ax, color=[palette[w] for w in order], lw=1.5, alpha=0.8)
+    ax.set_xticks(range(len(cols)), ['Hm0', 'Tp', 'wind', 'roll σ', 'pitch σ', 'heave 4σ', 'R95'])
+    ax.set_ylabel('scaled value (0 = lowest, 1 = highest)')
+    ax.legend(frameon=False, ncol=3, loc='upper center', bbox_to_anchor=(0.5, 1.12))
+    return save(fig, 'v5_parallel_coordinates.png')

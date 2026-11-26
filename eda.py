@@ -42,6 +42,13 @@ if __name__ == '__main__':
     blocks = pd.concat([eda.dp_blocks(days[d], phases[d], b, eda.raw_files(data.days()[d]), spectra).assign(day=d)
                         for d in days], ignore_index=True)
     blocks.round(3).to_csv(eda.OUT / 'dp_heading_blocks.csv', index=False)
+
+    # Duplicates and outliers (Tukey's 1.5 IQR rule on the 1-minute values, per phase type)
+    minutes = pd.concat([eda.minute_stats(s) for s in days.values()], ignore_index=True)
+    eda.duplicates(days, b).to_csv(eda.OUT / 'duplicates.csv', index=False)
+    eda.iqr_outliers(minutes).to_csv(eda.OUT / 'outliers_iqr.csv', index=False)
+    print(eda.duplicates(days, b).to_string(index=False))
+    print(eda.iqr_outliers(minutes).to_string(index=False))
     print(f'{len(blocks)} steady-heading blocks at the DP stations')
 
     # 3) Figures
@@ -55,3 +62,4 @@ if __name__ == '__main__':
     print(eda.fig_vs_heading(blocks))
     print(eda.fig_correlation(blocks))
     print(eda.fig_spectra(blocks, spectra))
+    print(eda.fig_missing(blocks))

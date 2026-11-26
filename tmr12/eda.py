@@ -190,6 +190,29 @@ def summary_stats(s):
     return s.groupby('kind')[cols].describe().T.round(3)
 
 
+def duplicates(days, b):
+    """Duplicate records (same time stamp twice) in the ship summaries and the buoy data."""
+    rows = [{'dataset': f'ship {day}', 'records': len(s), 'duplicates': int(s.t.duplicated().sum())}
+            for day, s in days.items()]
+    for name, g in b.groupby('buoy'):
+        rows.append({'dataset': name, 'records': len(g), 'duplicates': int(g.time.duplicated().sum())})
+    return pd.DataFrame(rows)
+
+
+def iqr_outliers(m, cols=('roll_std', 'pitch_std', 'heave_hs_m')):
+    """Tukey's rule: a value is an outlier if it lies more than 1.5 IQR outside the quartiles.
+    Applied per phase type, since quay, transit and station have very different normal ranges."""
+    rows = []
+    for kind, g in m.groupby('kind'):
+        for col in cols:
+            q1, q3 = g[col].quantile([0.25, 0.75])
+            hi = q3 + 1.5 * (q3 - q1)
+            n = int((g[col] > hi).sum() + (g[col] < q1 - 1.5 * (q3 - q1)).sum())
+            rows.append({'phase': kind, 'variable': col, 'upper_fence': round(hi, 3),
+                         'outliers': n, 'percent': round(100 * n / len(g), 1)})
+    return pd.DataFrame(rows)
+
+
 # ---------- figures ----------
 
 def fig_completeness(days):
@@ -405,3 +428,21 @@ def fig_spectra(blocks, spectra):
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
     fig.colorbar(sm, ax=axes, shrink=0.8, label='|relative wave heading| [°]')
     return save(fig, '9_motion_spectra.png')
+
+
+def fig_missing(blocks):
+    """Missing values in the heading-block table: one row per block, one column per variable.
+    Blocks with no buoy within MAX_BUOY_KM have no wave or wind data (missing by design, not at random)."""
+    cols = ['roll_std_wave', 'pitch_std_wave', 'heave_hs_wave', 'footprint_r95_m', 'Hm0', 'Tp', 'Mdir',
+            'wind_ms', 'wind_from']
+    miss = blocks[cols].isna().values
+    fig, ax = plt.subplots(figsize=(6, 4.5))
+    ax.imshow(miss, aspect='auto', cmap=matplotlib.colors.ListedColormap(['#e4e3df', ORANGE]), interpolation='none')
+    ax.set_xticks(range(len(cols)), cols, rotation=45, ha='right')
+    labels = [f"{pd.Timestamp(d).day} {pd.Timestamp(d):%b} {st.replace('Station ', 'S')}"
+              for d, st in zip(blocks.day, blocks.station)]
+    ax.set_yticks(range(len(blocks)), labels, fontsize=6)
+    ax.grid(False)
+    ax.set_ylabel('heading block')
+    ax.set_title(f'orange = missing ({miss.any(axis=1).sum()} of {len(blocks)} blocks)', loc='left', fontsize=9)
+    return save(fig, '10_missing_values.png')

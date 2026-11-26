@@ -26,3 +26,5 @@ if __name__ == '__main__':
     print(vis.fig_motion_rose(blocks))
     print(vis.fig_heave_vs_buoy(blocks, b))
     print(vis.fig_two_time_scales(blocks, days))
+    print(vis.fig_pairplot(blocks))
+    print(vis.fig_parallel(blocks))

@@ -1,0 +1,10 @@
+phase,variable,upper_fence,outliers,percent
+Quay,roll_std,0.056,186,9.2
+Quay,pitch_std,0.035,150,7.5
+Quay,heave_hs_m,0.256,119,5.9
+Station,roll_std,3.208,14,2.2
+Station,pitch_std,1.465,0,0.0
+Station,heave_hs_m,1.099,0,0.0
+Transit,roll_std,0.594,15,6.2
+Transit,pitch_std,0.305,16,6.6
+Transit,heave_hs_m,0.45,19,7.9
