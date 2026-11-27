@@ -8,10 +8,9 @@ The E39 buoys are used as context: the sea state explains when DP looks like lyi
 Every plot function takes already-loaded data, saves one PNG in reports/eda/ and returns its path.
 The heavy lifting (loading, phases, heading blocks) is reused from tmr12/data.py.
 
-Two kinds of ship data are used:
-  - the 10 s summaries in data/processed/ (in git, all days): position, heading, speed, and n/mean/std
-    of roll, pitch and height per 10 s file;
-  - the raw 100 Hz files (not in git, only where available): needed for spectra and filtered heave.
+Ship data: the 10 s summaries in data/processed/ (in git, all days): position, heading, speed, and n/mean/std
+of roll, pitch and height per 10 s file. The raw 100 Hz files (not in git) are only used, if present, to check
+the number of CSV columns.
 """
 from pathlib import Path
 
@@ -22,7 +21,6 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker
 import numpy as np
 import pandas as pd
-from scipy import signal
 
 from tmr12 import data
 
@@ -36,7 +34,6 @@ MODE_COLOURS = {'Harbour': GREY, 'DP': BLUE, 'Transit': ORANGE}
 FEATURE_LABELS = {'speed_kn': 'speed [kn]', 'roll_std': 'roll σ [°]', 'pitch_std': 'pitch σ [°]',
                   'heave_hs_m': 'heave 4σ [m]', 'turn_deg': 'heading change [°/min]'}   # cluster.FEATURES
 BUOY_COLOURS = {'D': BLUE, 'A': ORANGE}
-DAY_COLOURS = {'2023-10-30': BLUE, '2023-10-31': ORANGE, '2023-11-02': AQUA, '2023-11-03': GREY}
 
 plt.rcParams.update({'figure.dpi': 110, 'savefig.dpi': 150, 'font.size': 9,
                      'axes.spines.top': False, 'axes.spines.right': False,
@@ -45,8 +42,6 @@ plt.rcParams.update({'figure.dpi': 110, 'savefig.dpi': 150, 'font.size': 9,
 
 M_PER_DEG_LAT = 111_320   # metres per degree latitude (good enough for a few hundred metres)
 MAX_BUOY_KM = 3           # a buoy further away than this does not describe the waves at the ship
-FS = 100                  # raw sample rate [Hz]
-HIGHPASS_S = 30           # keep motions faster than this period [s]: waves, not tide or slow GNSS drift
 
 
 def save(fig, name):
@@ -103,8 +98,7 @@ def local_xy(lat, lon, lat0, lon0):
 def minute_stats(s):
     """1-minute windows (6 files = 6000 samples) for the overview figures.
     Roll and pitch: std over the whole minute (data.pooled), so each value covers several wave periods,
-    unlike one 10 s file that holds only one or two. Heave: see the comment below; the exact wave
-    heave per block comes from the raw data (raw_block_motion)."""
+    unlike one 10 s file that holds only one or two. Heave: see the comment below."""
     rows = []
     for t, g in s.groupby(s.time.dt.floor('1min')):
         if len(g) < 6:
@@ -118,108 +112,12 @@ def minute_stats(s):
     return m
 
 
-# ---------- raw 100 Hz data ----------
-
-def raw_files(day_dir):
-    """All raw 10 s files of one day, indexed by their start time (file names are in local time)."""
-    files = sorted(Path(day_dir).glob('*/*.csv'))
-    t = pd.to_datetime([f.stem for f in files], format='%Y%m%d%H%M%S')
-    t = t.tz_localize(data.TZ, ambiguous='NaT', nonexistent='NaT')   # the DST night gives NaT
-    return pd.Series(files, index=t)[t.notna()]
-
-
-def raw_block(files, start, end):
-    """Glue the raw files of one block into one continuous 100 Hz time series."""
-    sel = files[(files.index >= start - pd.Timedelta('15s')) & (files.index < end)]
-    d = pd.concat([pd.read_csv(f, sep=';', header=None, names=data.COLS) for f in sel])
-    d = d[(d.t >= start.timestamp()) & (d.t < end.timestamp())]
-    return d.sort_values('t').reset_index(drop=True)
-
-
-def wave_part(x):
-    """Remove the mean, trend and everything slower than HIGHPASS_S (tide, GNSS drift, slow list)."""
-    sos = signal.butter(4, 1 / HIGHPASS_S, 'highpass', fs=FS, output='sos')
-    return signal.sosfiltfilt(sos, signal.detrend(np.asarray(x, dtype=float)))
-
-
-def spectrum(x):
-    """Power spectral density (Welch, 120 s segments) and the peak period between 2 and 25 s."""
-    f, psd = signal.welch(x, fs=FS, nperseg=120 * FS)
-    ok = (f > 1 / 25) & (f < 1 / 2)
-    return f, psd, 1 / f[ok][psd[ok].argmax()]
-
-
-def raw_block_motion(d):
-    """Wave-induced motion of one block from the raw 100 Hz data: std, heave 4σ and peak periods."""
-    out, spectra = {}, {}
-    for col, name in [('roll', 'roll'), ('pitch', 'pitch'), ('height_cm', 'heave')]:
-        x = wave_part(d[col] / 100 if col == 'height_cm' else d[col])   # height: cm -> m
-        f, psd, tp = spectrum(x)
-        spectra[name] = (f, psd)
-        out[f'{name}_tp_s'] = tp
-        if name == 'heave':
-            out['heave_hs_wave'] = 4 * x.std()
-        else:
-            out[f'{name}_std_wave'] = x.std()
-    return out, spectra
-
-
 # ---------- tables ----------
 
 def nearest_buoy(lat, lon, b):
     """Short name ('A', 'D', ...) of the buoy closest to a position, and the distance [km]."""
     d = data.buoy_distances(lat, lon, b)
     return d.index[0].split()[1], d.iloc[0]
-
-
-def dp_blocks(s, p, b, files=None, spectra=None):
-    """One row per steady-heading block at a DP station: ship motion, footprint, waves and wind.
-
-    The heading blocks come from data.heading_blocks, using the buoy nearest to each station.
-    Added here: footprint size (from the 10 s mean positions) and wind from the buoy.
-    Stations further than MAX_BUOY_KM from every buoy keep their ship values, but get no waves/wind.
-    With the raw files (files = raw_files(day dir)) the wave-induced motion is computed from the
-    100 Hz data of the whole block; spectra (a dict) then collects the spectra per block.
-    Without raw files the motion comes from the 10 s summaries: roll and pitch σ pooled over the block
-    (exact), heave 4σ from the variation inside each 10 s file (within 5 % of the raw value at buoy D
-    on 30-31 Oct, see the EDA section). motion_source says which one was used."""
-    rows = []
-    for st in p[p.phase.str.startswith('Station')].itertuples():
-        short, km = nearest_buoy(st.lat, st.lon, b)
-        buoy = b[b.short == short].buoy.iloc[0]
-        hb = data.heading_blocks(s, p, b, buoy)
-        if hb.empty:
-            continue
-        for blk in hb[hb.station == st.phase].itertuples():
-            g = s[(s.time >= blk.start) & (s.time < blk.end)]
-            north, east = local_xy(g.lat, g.lon, g.lat.mean(), g.lon.mean())
-            radius = np.hypot(north, east)
-            w = b[(b.buoy == buoy) & (b.time > blk.start) & (b.time <= blk.end + pd.Timedelta('10min'))]
-            wind_from = data.circmean(w.WindDirection) if len(w) else np.nan
-            row = blk._asdict()
-            if km > MAX_BUOY_KM:   # too far away: drop the buoy values for this block
-                short, w, wind_from = 'none', w.iloc[0:0], np.nan
-                row.update({k: np.nan for k in ['Hm0', 'Tp', 'Mdir', 'ThTp', 'rel_Mdir', 'rel_ThTp']})
-            if files is not None:
-                motion, spec = raw_block_motion(raw_block(files, blk.start, blk.end))
-                row.update(motion, motion_source='raw 100 Hz')
-                if spectra is not None:
-                    spectra[(blk.start, blk.end)] = spec
-            else:
-                row.update(roll_std_wave=blk.roll_std, pitch_std_wave=blk.pitch_std,
-                           heave_hs_wave=blk.heave_hs_m, motion_source='10 s files')
-            rows.append({**row, 'buoy': short, 'buoy_km': km,
-                         'footprint_r95_m': np.percentile(radius, 95),   # 95 % of positions inside this circle
-                         'footprint_std_m': np.sqrt(north.var() + east.var()),
-                         'heading_std_deg': np.degrees(np.std(np.radians(data.angle_diff(g.heading, blk.heading)))),
-                         'wind_ms': w.WindSpeed.mean(), 'wind_from': wind_from,
-                         'rel_wind': data.rel_heading(wind_from, blk.heading)})
-    if not rows:
-        return pd.DataFrame()
-    out = pd.DataFrame(rows).drop(columns=['Index'])
-    out['abs_rel_wave'] = out.rel_Mdir.abs()   # 0 = head seas, 90 = beam, 180 = following
-    out['abs_rel_wind'] = out.rel_wind.abs()
-    return out
 
 
 def summary_stats(s):
@@ -237,21 +135,20 @@ def duplicates(days, b):
     return pd.DataFrame(rows)
 
 
-def iqr_outliers(m, cols=('roll_std', 'pitch_std', 'heave_hs_m')):
+def iqr_outliers(w, cols=('roll_std', 'pitch_std', 'heave_hs_m')):
     """Tukey's rule: a value is an outlier if it lies more than 1.5 IQR outside the quartiles.
-    Applied per phase type, since quay, transit and station have very different normal ranges."""
+    Applied to the 1-minute features per operating mode, since harbour, DP and transit have very different
+    normal ranges."""
     rows = []
-    for kind, g in m.groupby('kind'):
+    for mode, g in w.groupby('correct'):
         for col in cols:
             q1, q3 = g[col].quantile([0.25, 0.75])
-            hi = q3 + 1.5 * (q3 - q1)
-            n = int((g[col] > hi).sum() + (g[col] < q1 - 1.5 * (q3 - q1)).sum())
-            rows.append({'phase': kind, 'variable': col, 'upper_fence': round(hi, 3),
+            lo, hi = q1 - 1.5 * (q3 - q1), q3 + 1.5 * (q3 - q1)
+            n = int(((g[col] < lo) | (g[col] > hi)).sum())
+            rows.append({'mode': mode, 'variable': col, 'upper_fence': round(hi, 3),
                          'outliers': n, 'percent': round(100 * n / len(g), 1)})
     return pd.DataFrame(rows)
 
-
-# ---------- figures ----------
 
 def fig_completeness(days):
     """Data observability: how many 10 s files arrived per hour (expected 360) and where the gaps are."""
@@ -444,20 +341,3 @@ def fig_dp_stations(w, phases_by_day, b):
     return save(fig, '7_dp_stations_vs_harbour.png')
 
 
-def fig_missing(blocks):
-    """Missing values in the heading-block table: one row per block, one column per variable.
-    Blocks with no buoy within MAX_BUOY_KM have no wave or wind data (missing by design, not at random).
-    Blocks without raw 100 Hz files have no peak period (heave_tp_s needs the spectrum)."""
-    cols = ['roll_std_wave', 'pitch_std_wave', 'heave_hs_wave', 'heave_tp_s', 'footprint_r95_m', 'Hm0', 'Tp',
-            'Mdir', 'wind_ms', 'wind_from']
-    miss = blocks[cols].isna().values
-    fig, ax = plt.subplots(figsize=(6, max(4.5, 0.11 * len(blocks))))
-    ax.imshow(miss, aspect='auto', cmap=matplotlib.colors.ListedColormap(['#e4e3df', ORANGE]), interpolation='none')
-    ax.set_xticks(range(len(cols)), cols, rotation=45, ha='right')
-    labels = [f"{pd.Timestamp(d).day} {pd.Timestamp(d):%b} {st.replace('Station ', 'S')}"
-              for d, st in zip(blocks.day, blocks.station)]
-    ax.set_yticks(range(len(blocks)), labels, fontsize=6)
-    ax.grid(False)
-    ax.set_ylabel('heading block')
-    ax.set_title(f'orange = missing ({miss.any(axis=1).sum()} of {len(blocks)} blocks)', loc='left', fontsize=9)
-    return save(fig, '10_missing_values.png')

@@ -41,7 +41,7 @@ def windows(s):
 def load_windows():
     """Every day's 10 s rows with their correct state, cut into 1-minute windows."""
     rows = []
-    for day in data.days():
+    for day in eda.available_days():   # days in data/processed/ (in git) or data/raw/ship/
         s = data.load_day(day)
         rows.append(eda.add_phase_column(s, data.phases(s)).assign(day=day))
     return windows(pd.concat(rows, ignore_index=True))

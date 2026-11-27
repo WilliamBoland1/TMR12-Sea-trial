@@ -1,9 +1,8 @@
 """Run the whole EDA: python eda.py
 
 Writes PNG figures and CSV tables to reports/eda/.
-Ship data: the 10 s summaries in data/processed/ (in git) are used for every day. The raw 100 Hz files
-(data/raw/ship/<day folder>/ as in the README, not in git) are used where they exist. To read the raw
-files from another folder (for example the OneDrive "DP data" folder), set SHIP_DIR below.
+Ship data: the 10 s summaries in data/processed/ (in git). The raw 100 Hz files are not needed; if they are
+in data/raw/ship/ or in the folder set by SHIP_DIR / TMR12_SHIP_DIR, the number of CSV columns is also checked.
 """
 from pathlib import Path
 
@@ -39,11 +38,6 @@ if __name__ == '__main__':
         eda.OUT / 'ship_quality.csv')
     data.buoy_checks(b).to_csv(eda.OUT / 'buoy_quality.csv', index=False)
     eda.summary_stats(s_all).to_csv(eda.OUT / 'summary_stats.csv')
-    # Steady-heading blocks; with raw files the motion is computed from the 100 Hz data of each whole block
-    blocks = pd.concat([eda.dp_blocks(days[d], phases[d], b, eda.raw_files(raw_dirs[d]) if raw_dirs[d] else None).assign(day=d)
-                        for d in days], ignore_index=True)
-    blocks.round(3).to_csv(eda.OUT / 'dp_heading_blocks.csv', index=False)
-
     # Operating mode per minute: the same features and labels as the model in tmr12/cluster.py
     w = cluster.windows(s_all)
     w = w[w.correct != 'Unknown']
@@ -52,13 +46,11 @@ if __name__ == '__main__':
     print(eda.mode_balance(w).to_string())
     print(eda.station_table(w, phases, b).round(2).to_string(index=False))
 
-    # Duplicates and outliers (Tukey's 1.5 IQR rule on the 1-minute values, per phase type)
-    minutes = pd.concat([eda.minute_stats(s) for s in days.values()], ignore_index=True)
+    # Duplicates and outliers (Tukey's 1.5 IQR rule on the 1-minute features, per mode)
     eda.duplicates(days, b).to_csv(eda.OUT / 'duplicates.csv', index=False)
-    eda.iqr_outliers(minutes).to_csv(eda.OUT / 'outliers_iqr.csv', index=False)
+    eda.iqr_outliers(w).to_csv(eda.OUT / 'outliers_iqr.csv', index=False)
     print(eda.duplicates(days, b).to_string(index=False))
-    print(eda.iqr_outliers(minutes).to_string(index=False))
-    print(f'{len(blocks)} steady-heading blocks at the DP stations')
+    print(eda.iqr_outliers(w).to_string(index=False))
 
     # 3) Figures
     print(eda.fig_completeness(days))
@@ -69,4 +61,3 @@ if __name__ == '__main__':
     print(eda.fig_feature_pairs(w))
     print(eda.fig_feature_correlation(w))
     print(eda.fig_dp_stations(w, phases, b))
-    print(eda.fig_missing(blocks))
