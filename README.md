@@ -23,10 +23,18 @@ python -m venv .venv                  # once (Python 3.11)
 .venv\Scripts\activate                # Windows PowerShell/cmd; Git Bash: source .venv/Scripts/activate
 pip install -r requirements.txt       # pinned, tested versions
 
-python main.py            # builds data/processed/*.parquet (~1-6 min per day the first time) + reports/*.png
+python eda.py             # EDA figures and tables          -> reports/eda/
+python vis.py             # data-visualisation figures      -> reports/vis/
+python cluster.py         # k-means + random forest         -> reports/cluster/
+python profile_data.py    # data profiling (HTML)           -> reports/profiling/
 streamlit run app.py      # the explorer
 python tests/test_data.py # self-checks
 ```
+
+These scripts only need what is in the repository: the 10 s summaries in `data/processed/` and the buoy file
+`data/raw/buoys/buoy_wave_params_trial.csv`. The raw 100 Hz ship logs (about 5.4 GB) are not in git. They are only
+needed to rebuild the 10 s summaries (`python main.py`, ~1-6 min per day). Raw data: TODO add link. Put the day folders
+in `data/raw/ship/`, or point `TMR12_SHIP_DIR` at the folder that holds them.
 
 In VS Code, pick `.venv` via *Python: Select Interpreter*.
 
@@ -36,8 +44,13 @@ In VS Code, pick `.venv` via *Python: Select Interpreter*.
 app.py              Streamlit UI: the 9 steps
 main.py             CLI: processed data + PNG reports
 tmr12/data.py       loading, 10 s summaries, phases, 10-min blocks, heading blocks, buoys, quality checks
-tmr12/cluster.py    operating state (Harbour / DP / Transit) from motion: GMM clustering + decision tree
-cluster.py          CLI: runs the clustering, writes reports/cluster/
+tmr12/cluster.py    operating state (Harbour / DP / Transit) from motion: k-means clustering
+tmr12/forest.py     random forest on the same features (leave one day out)
+cluster.py          CLI: runs the clustering and the forest, writes reports/cluster/
+tmr12/eda.py, eda.py            EDA of the operating modes, writes reports/eda/
+tmr12/vis.py, vis.py            data-visualisation figures, writes reports/vis/
+profile_data.py                 automatic data profiling (fg-data-profiling), writes reports/profiling/
+tmr12/fetch.py, fetch_buoys.py  download E39 buoy data from MET's THREDDS server
 tmr12/maps.py       folium map
 tmr12/report.py     static PNG overview
 data/raw/ship/      30/, 31/, 02/, 03/  ->  <hh>/<YYYYMMDDhhmmss>.csv
@@ -99,5 +112,5 @@ This cuts each new file to the trial windows (`*_trial.nc`) and rebuilds `buoy_w
 ## Known data gaps
 
 - **30 Oct:** the plan said buoys D and B, but the ship actually stopped at D (Station 1) and A (Stations 2–3).
-- **2 Nov:** buoy D (where the ship sat) has only raw files, no wave parameters. The nearest buoy with data is A, about 7 km away.
+- **2 Nov:** the monthly buoy D file used by `cut_buoys.py` has only raw data, but MET's THREDDS server has the wave parameters (Hm0, Tp, Mdir) and wind for buoy D on 2 Nov. `fetch_buoys.py` downloads them.
 - **3 Nov:** the ship was off Kristiansund. The nearest buoy is G, about 24 km from Station 2 and 65 km from Station 1. G sits inside Halsafjorden (short fjord waves, Hm0 ≈ 0.3 m), so it is only a rough reference for the open-sea conditions the ship saw.

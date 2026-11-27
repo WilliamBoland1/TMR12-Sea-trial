@@ -8,3 +8,8 @@ pyarrow==23.0.1
 numpy==1.26.4
 matplotlib==3.8.0
 scikit-learn==1.9.1
+# Used by eda.py, vis.py, cluster.py, fetch_buoys.py and profile_data.py
+scipy
+seaborn
+requests
+fg-data-profiling

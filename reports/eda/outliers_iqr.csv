@@ -1,0 +1,10 @@
+mode,variable,upper_fence,outliers,percent
+DP,roll_std,2.406,49,3.8
+DP,pitch_std,0.879,34,2.7
+DP,heave_hs_m,0.714,35,2.7
+Harbour,roll_std,0.043,340,9.6
+Harbour,pitch_std,0.029,284,8.0
+Harbour,heave_hs_m,0.224,164,4.6
+Transit,roll_std,0.891,135,14.4
+Transit,pitch_std,0.525,109,11.6
+Transit,heave_hs_m,0.656,134,14.3
