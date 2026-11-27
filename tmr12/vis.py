@@ -1,12 +1,13 @@
-"""Data visualisation for the DP part of the project (30 Oct - 3 Nov 2023; buoy comparisons 30 Oct - 2 Nov).
+"""Data visualisation for the operating-mode problem (Harbour / DP / Transit), RV Gunnerus, 30 Oct - 3 Nov 2023.
 
-Three figures, chosen for the project thesis on DP capability and DP footprints:
-  1. Motion rose: roll, pitch and heave against the relative wave heading, drawn like a DP capability plot.
-  2. Ship heave against buoy Hm0 with uncertainty bars: how far the ship can be used as a wave sensor.
-  3. Two time scales on DP: slow position excursions (what DP controls) next to fast wave motion (what it does not).
-  4. Pair plot and 5. parallel coordinates of the heading blocks: the multidimensional plots from the course lab.
+The EDA figures (tmr12/eda.py) are for exploring. These four are made to communicate the main points:
+  1. Time budget: how many hours the ship spent in each mode per day (what a mode detector is used for).
+  2. Decision space: speed against roll per minute, coloured by mode, with the 3 kn transit rule.
+  3. DP motion against sea state: roll and pitch at each DP station against the buoy Hm0, with spread bars,
+     next to the harbour range: how calm the sea must be before DP looks like harbour.
+  4. Parallel coordinates of the five features: the profile of each mode at a glance (course lab method).
 
-Reads reports/eda/dp_heading_blocks.csv, so run eda.py first. Figures go to reports/vis/.
+Uses the same 1-minute windows and labels as the model (cluster.windows). Figures go to reports/vis/.
 """
 import numpy as np
 import pandas as pd
@@ -17,8 +18,7 @@ import matplotlib.pyplot as plt
 from tmr12 import data, eda
 
 OUT = data.ROOT / 'reports' / 'vis'
-NOISE_HS_M = 0.11   # heave 4σ measured at the quay: GNSS noise floor (EDA, 1-minute windows)
-DAY_COLOURS = eda.DAY_COLOURS
+MODES = list(eda.MODE_COLOURS)   # Harbour, DP, Transit
 
 
 def save(fig, name):
@@ -29,145 +29,100 @@ def save(fig, name):
     return path
 
 
-def load_blocks():
-    """Heading blocks from the EDA, with times as timestamps."""
-    blocks = pd.read_csv(eda.OUT / 'dp_heading_blocks.csv')
-    for col in ['start', 'end']:
-        blocks[col] = pd.to_datetime(blocks[col], utc=True).dt.tz_convert(data.TZ)
-    return blocks
+def short_day(day):
+    return pd.Timestamp(day).strftime('%-d %b')
 
 
-def fig_motion_rose(blocks):
-    """Polar plots of roll σ, pitch σ and heave 4σ against the relative wave heading (buoy D only).
-    0° = head seas at the top, waves from starboard to the right, like a DP capability plot."""
-    blocks = blocks[blocks.buoy == 'D']
-    cols = [('roll_std_wave', 'roll σ [°]'), ('pitch_std_wave', 'pitch σ [°]'), ('heave_hs_wave', 'heave 4σ [m]')]
-    fig, axes = plt.subplots(1, 3, figsize=(12, 4.3), subplot_kw={'projection': 'polar'})
-    for ax, (col, label) in zip(axes, cols):
-        for day, g in blocks.groupby('day'):
-            ax.scatter(np.radians(g.rel_Mdir), g[col], s=g.minutes * 3, color=DAY_COLOURS[day], alpha=0.85,
-                       edgecolor='white', lw=0.5, label=pd.Timestamp(day).strftime('%-d %b'))
-        ax.set_theta_zero_location('N')   # head seas at the top
-        ax.set_theta_direction(-1)         # clockwise: waves from starboard to the right
-        ax.set_thetagrids([0, 45, 90, 135, 180, 225, 270, 315],
-                          ['head', '45', 'beam\n(stb)', '135', 'following', '225', 'beam\n(port)', '315'])
-        ax.set_rlim(0, blocks[col].max() * 1.1)
-        ax.set_title(label, pad=18)
-    leg = axes[0].legend(loc='lower left', bbox_to_anchor=(-0.25, -0.15), frameon=False, title='buoy D')
+def fig_time_budget(w):
+    """Hours in each mode per day, as stacked horizontal bars with the hours written in each segment."""
+    hours = pd.crosstab(w.day, w.correct).reindex(columns=MODES, fill_value=0) / 60
+    hours.loc['all days'] = hours.sum() / len(hours)   # average day
+    fig, ax = plt.subplots(figsize=(8, 3.2))
+    left = np.zeros(len(hours))
+    labels = [short_day(d) if d != 'all days' else 'average day' for d in hours.index]
+    for mode in MODES:
+        ax.barh(labels, hours[mode], left=left, color=eda.MODE_COLOURS[mode], edgecolor='white', lw=2, label=mode)
+        for y, (x0, h) in enumerate(zip(left, hours[mode])):
+            if h >= 1:   # no label in segments too narrow for text
+                ax.text(x0 + h / 2, y, f'{h:.1f} h', ha='center', va='center', fontsize=8,
+                        color='white' if mode != 'Harbour' else 'black')
+        left += hours[mode].values
+    ax.invert_yaxis()
+    ax.set(xlabel='hours', xlim=(0, 24), xticks=range(0, 25, 3))
+    ax.grid(axis='y', visible=False)
+    ax.legend(frameon=False, ncol=3, loc='upper center', bbox_to_anchor=(0.5, 1.18))
+    return save(fig, 'v1_time_budget.png')
+
+
+def fig_decision_space(w, phases_by_day):
+    """Speed against roll σ per minute (log axes), coloured by mode. Dashed line: the 3 kn rule behind the
+    transit label. The DP minutes of the calm station (31 Oct S2) are ringed: they lie in the harbour cloud."""
+    fig, ax = plt.subplots(figsize=(6.5, 5))
+    for mode in MODES:   # harbour first, so the smaller classes are drawn on top
+        g = w[w.correct == mode]
+        ax.scatter(eda.positive(g.speed_kn), eda.positive(g.roll_std), s=6, alpha=0.4, lw=0,
+                   color=eda.MODE_COLOURS[mode], label=f'{mode} ({len(g)} min)')
+    calm = next(m for day, st, m in eda.station_minutes(w, phases_by_day)
+                if day == '2023-10-31' and st.phase == 'Station 2')
+    ax.scatter(eda.positive(w.speed_kn[calm]), eda.positive(w.roll_std[calm]), s=14, facecolor='none',
+               edgecolor='black', lw=0.6, label='DP at 31 Oct S2 (calm)')
+    ax.axvline(data.MOVING_KN, color=eda.GREY, ls='--', lw=1)
+    ax.text(data.MOVING_KN * 1.08, 0.03, 'transit rule: 3 kn', transform=ax.get_xaxis_transform(), fontsize=8,
+            color=eda.GREY, rotation=90, va='bottom')
+    ax.set(xscale='log', yscale='log', xlabel='speed [kn] (median per minute)', ylabel='roll σ [°] (per minute)')
+    leg = ax.legend(frameon=False, loc='upper left', fontsize=8)
     for h in leg.legend_handles:
-        h.set_sizes([40])   # same marker size in the legend, whatever the block length
+        h.set_alpha(1)
+    return save(fig, 'v2_decision_space.png')
+
+
+def fig_dp_vs_sea_state(w, phases_by_day, b):
+    """Roll σ and pitch σ at each DP station against the buoy Hm0. Point: median; vertical bar: 25-75 % of the
+    minutes; horizontal bar: lowest to highest 10-min Hm0 during the station. Grey band: 5-95 % of the harbour
+    minutes. Dashed line: median at 31 Oct S2, which had no buoy within MAX_BUOY_KM."""
+    harbour = w[w.correct == 'Harbour']
+    rows = []
+    for day, st, m in eda.station_minutes(w, phases_by_day):
+        short, km = eda.nearest_buoy(st.lat, st.lon, b)
+        hm0 = b[(b.short == short) & (b.time > st.start) & (b.time <= st.end + pd.Timedelta('10min'))].Hm0
+        rows.append({'day': day, 'station': st.phase, 'buoy': short if km <= eda.MAX_BUOY_KM else 'none',
+                     'hm0': hm0.mean(), 'hm0_lo': hm0.min(), 'hm0_hi': hm0.max(), 'minutes': int(m.sum()),
+                     **{f'{c}_{q}': w.loc[m, c].quantile(q / 100) for c in ['roll_std', 'pitch_std'] for q in (25, 50, 75)}})
+    st = pd.DataFrame(rows)
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.2))
+    for ax, col, label in zip(axes, ['roll_std', 'pitch_std'], ['roll σ [°]', 'pitch σ [°]']):
+        lo, hi = harbour[col].quantile([0.05, 0.95])
+        ax.axhspan(lo, hi, color=eda.GREY, alpha=0.25, lw=0, label='harbour, 5-95 %')
+        for short, colour in eda.BUOY_COLOURS.items():
+            g = st[st.buoy == short]
+            ax.errorbar(g.hm0, g[f'{col}_50'], xerr=[g.hm0 - g.hm0_lo, g.hm0_hi - g.hm0],
+                        yerr=[g[f'{col}_50'] - g[f'{col}_25'], g[f'{col}_75'] - g[f'{col}_50']],
+                        fmt='o', ms=6, color=colour, elinewidth=1, capsize=2, label=f'DP station at buoy {short}')
+            for i, r in enumerate(g.itertuples()):   # labels alternately above and below, so neighbours do not overlap
+                ax.annotate(f"{short_day(r.day)} {r.station.replace('Station ', 'S')}", (r.hm0, getattr(r, f'{col}_50')),
+                            xytext=(5, 3 if i % 2 == 0 else -10), textcoords='offset points', fontsize=7)
+        calm = st[(st.day == '2023-10-31') & (st.station == 'Station 2')].iloc[0]
+        ax.axhline(calm[f'{col}_50'], color='black', ls='--', lw=1, label='31 Oct S2 (no buoy, calm)')
+        ax.set(yscale='log', xlim=(0, 0.8), xlabel='buoy $H_{m0}$ [m]', ylabel=label)
+    axes[0].legend(frameon=False, fontsize=8, loc='lower right')
     fig.tight_layout()
-    return save(fig, 'v1_motion_rose.png')
+    return save(fig, 'v3_dp_vs_sea_state.png')
 
 
-def fig_heave_vs_buoy(blocks, b):
-    """Ship heave 4σ against buoy Hm0 per heading block, with uncertainty bars.
-    Buoy bar: lowest to highest 10-min Hm0 during the block (the sea state changes in time and space).
-    Ship bar: statistical uncertainty of a std estimated from N waves, about σ/sqrt(2N), N = duration / Tp.
-    Grey band: GNSS noise floor measured at the quay.
-    Filled markers: heave from the raw 100 Hz data; open markers: from the 10 s files (no raw data that day)."""
-    blocks = blocks[blocks.buoy != 'none'].copy()
-    lo, hi = [], []
-    for blk in blocks.itertuples():
-        name = [n for n in b.buoy.unique() if n.split()[1] == blk.buoy][0]
-        w = b[(b.buoy == name) & (b.time > blk.start) & (b.time <= blk.end + pd.Timedelta('10min'))]
-        lo.append(w.Hm0.min())
-        hi.append(w.Hm0.max())
-    blocks['hm0_lo'], blocks['hm0_hi'] = lo, hi
-    n_waves = blocks.minutes * 60 / blocks.Tp
-    blocks['ship_err'] = blocks.heave_hs_wave / np.sqrt(2 * n_waves)
-
-    fig, ax = plt.subplots(figsize=(5.5, 5))
-    ax.axhspan(0, NOISE_HS_M, color=eda.GREY, alpha=0.2, lw=0, label=f'GNSS noise floor ({NOISE_HS_M} m)')
-    ax.plot([0, 1], [0, 1], color=eda.GREY, ls='--', lw=1, label='ship = buoy')
-    for (short, source), g in blocks.groupby(['buoy', 'motion_source']):
-        colour = eda.BUOY_COLOURS[short]
-        raw = source == 'raw 100 Hz'
-        ax.errorbar(g.Hm0, g.heave_hs_wave, xerr=[g.Hm0 - g.hm0_lo, g.hm0_hi - g.Hm0], yerr=g.ship_err,
-                    fmt='o', ms=6, color=colour, mfc=colour if raw else 'white', ecolor=colour, elinewidth=1,
-                    capsize=2, label=f"buoy {short}, {'100 Hz data' if raw else '10 s files'}")
-    ax.set(xlim=(0, 0.85), ylim=(0, 0.85), aspect='equal',
-           xlabel='buoy $H_{m0}$ [m]', ylabel='ship heave 4σ [m]')
-    ax.legend(frameon=False, loc='upper left')
-    return save(fig, 'v2_heave_vs_buoy.png')
-
-
-def fig_two_time_scales(blocks, days):
-    """Two blocks at buoy D (beam seas and following seas), each with:
-    left: position excursion from the block mean (10 s means, the slow motion DP works against);
-    right: two minutes of raw 100 Hz roll and heave (the wave motion DP cannot remove)."""
-    d = blocks[(blocks.buoy == 'D') & (blocks.day == '2023-10-31')]
-    picks = [d.loc[d.abs_rel_wave.sub(90).abs().idxmin()], d.loc[d.abs_rel_wave.idxmax()]]
-    fig, axes = plt.subplots(2, 2, figsize=(11, 5.5), gridspec_kw={'width_ratios': [1.4, 1]})
-    for row, blk in zip(axes, picks):
-        s = days[blk.day]
-        g = s[(s.time >= blk.start) & (s.time < blk.end)]
-        north, east = eda.local_xy(g.lat, g.lon, g.lat.mean(), g.lon.mean())
-        minutes = (g.time - blk.start).dt.total_seconds() / 60
-        row[0].plot(minutes, north, color=eda.BLUE, lw=1.2, label='north')
-        row[0].plot(minutes, east, color=eda.ORANGE, lw=1.2, label='east')
-        row[0].set(xlabel='minutes into block', ylabel='excursion [m]', ylim=(-1.2, 1.2))
-        row[0].set_title(f'heading {blk.heading:.0f}°, waves {blk.abs_rel_wave:.0f}° off the bow: '
-                         f'R95 = {blk.footprint_r95_m:.2f} m', loc='left', fontsize=9)
-
-        raw = eda.raw_block(eda.raw_files(data.days()[blk.day]), blk.start, blk.start + pd.Timedelta('2min'))
-        t = raw.t - raw.t.iloc[0]
-        roll = eda.wave_part(raw.roll)
-        heave = eda.wave_part(raw.height_cm / 100)
-        row[1].plot(t, roll, color=eda.BLUE, lw=0.8, label='roll [°]')
-        row[1].plot(t, heave * 10, color=eda.AQUA, lw=0.8, label='heave [dm]')
-        row[1].set(xlabel='seconds', ylim=(-8, 8))
-        row[1].set_title(f'roll σ = {blk.roll_std_wave:.1f}°, heave 4σ = {blk.heave_hs_wave:.2f} m',
-                         loc='left', fontsize=9)
-    axes[0, 0].legend(frameon=False, ncol=2, loc='upper right')
-    axes[0, 1].legend(frameon=False, ncol=2, loc='upper right')
-    fig.tight_layout()
-    return save(fig, 'v3_two_time_scales.png')
-
-
-WAVE_SECTOR = {'head': (0, 45), 'beam': (45, 135), 'following': (135, 181)}
-
-
-def sector(abs_rel):
-    """Relative wave direction as a class: head (0-45°), beam (45-135°) or following (135-180°) seas."""
-    for name, (lo, hi) in WAVE_SECTOR.items():
-        if lo <= abs_rel < hi:
-            return name
-
-
-def fig_pairplot(blocks):
-    """Pair plot (seaborn) of the main block variables, coloured by wave sector: every pair of variables
-    as a scatter plot, and each variable's distribution on the diagonal."""
-    import seaborn as sns
-    cols = {'Hm0': 'Hm0 [m]', 'roll_std_wave': 'roll σ [°]', 'pitch_std_wave': 'pitch σ [°]',
-            'heave_hs_wave': 'heave 4σ [m]', 'footprint_r95_m': 'R95 [m]'}
-    d = blocks[blocks.buoy != 'none'].copy()
-    d['waves'] = d.abs_rel_wave.map(sector)
-    d = d[list(cols) + ['waves']].rename(columns=cols)
-    palette = {'head': eda.BLUE, 'beam': eda.ORANGE, 'following': eda.AQUA}
-    g = sns.pairplot(d, hue='waves', palette=palette, hue_order=list(palette), corner=True,
-                     diag_kind='hist', plot_kws={'s': 30, 'edgecolor': 'white'}, height=1.7)
-    path = OUT / 'v4_pairplot.png'
-    OUT.mkdir(parents=True, exist_ok=True)
-    g.savefig(path, dpi=150)
-    plt.close(g.figure)
-    return path
-
-
-def fig_parallel(blocks):
-    """Parallel coordinates (pandas.plotting): one line per heading block through all variables,
-    each scaled to 0-1, coloured by wave sector."""
+def fig_parallel(w, n=150):
+    """Parallel coordinates (pandas.plotting) of the five features: one line per minute, n random minutes per
+    mode, log10 values scaled from 0 (lowest) to 1 (highest)."""
     from pandas.plotting import parallel_coordinates
-    cols = ['Hm0', 'Tp', 'wind_ms', 'roll_std_wave', 'pitch_std_wave', 'heave_hs_wave', 'footprint_r95_m']
-    d = blocks[blocks.buoy != 'none'].copy()
-    scaled = (d[cols] - d[cols].min()) / (d[cols].max() - d[cols].min())
-    scaled['waves'] = d.abs_rel_wave.map(sector)
-    palette = {'head': eda.BLUE, 'beam': eda.ORANGE, 'following': eda.AQUA}
-    order = [w for w in palette if w in set(scaled.waves)]
-    scaled = scaled.sort_values('waves', key=lambda w: w.map(order.index))   # classes are coloured in this order
-    fig, ax = plt.subplots(figsize=(10, 4))
-    parallel_coordinates(scaled, 'waves', ax=ax, color=[palette[w] for w in order], lw=1.5, alpha=0.8)
-    ax.set_xticks(range(len(cols)), ['Hm0', 'Tp', 'wind', 'roll σ', 'pitch σ', 'heave 4σ', 'R95'])
-    ax.set_ylabel('scaled value (0 = lowest, 1 = highest)')
-    ax.legend(frameon=False, ncol=3, loc='upper center', bbox_to_anchor=(0.5, 1.12))
-    return save(fig, 'v5_parallel_coordinates.png')
+    d = pd.concat([w[w.correct == m].sample(min(n, (w.correct == m).sum()), random_state=0) for m in MODES])
+    x = np.log10(eda.positive(d[list(eda.FEATURE_LABELS)]))
+    x = (x - x.min()) / (x.max() - x.min())
+    x['mode'] = d.correct.values
+    fig, ax = plt.subplots(figsize=(9, 4))
+    parallel_coordinates(x, 'mode', ax=ax, color=[eda.MODE_COLOURS[m] for m in MODES], lw=0.8, alpha=0.35)
+    ax.set_xticks(range(len(eda.FEATURE_LABELS)), ['speed', 'roll σ', 'pitch σ', 'heave 4σ', 'heading change'])
+    ax.set_ylabel('log value, scaled (0 = lowest, 1 = highest)')
+    leg = ax.legend(frameon=False, ncol=3, loc='upper center', bbox_to_anchor=(0.5, 1.12))
+    for h in leg.legend_handles:
+        h.set_alpha(1)
+        h.set_linewidth(2)
+    return save(fig, 'v4_parallel_coordinates.png')
