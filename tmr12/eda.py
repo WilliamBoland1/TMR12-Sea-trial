@@ -1,7 +1,9 @@
 """Exploratory data analysis (EDA) of the RV Gunnerus DP trials, 30 Oct - 3 Nov 2023.
 
-Focus: how the ship behaves while it keeps position on DP at the stations, and how that
-depends on the waves and wind measured by the nearest E39 buoy.
+Focus: how the three operating modes (Harbour, DP, Transit) differ in the data, as input to the
+machine-learning model that finds the mode from the ship's own motion (tmr12/cluster.py).
+The features per minute are taken from cluster.windows, so the EDA looks at exactly what the model sees.
+The E39 buoys are used as context: the sea state explains when DP looks like lying in harbour.
 
 Every plot function takes already-loaded data, saves one PNG in reports/eda/ and returns its path.
 The heavy lifting (loading, phases, heading blocks) is reused from tmr12/data.py.
@@ -28,7 +30,11 @@ OUT = data.ROOT / 'reports' / 'eda'
 
 # Colours (validated categorical palette, fixed order) and a neutral grey for "not in focus"
 BLUE, ORANGE, AQUA, GREY = '#2a78d6', '#eb6834', '#1baf7a', '#8a8984'
-PHASE_COLOURS = {'Quay': GREY, 'Transit': BLUE, 'Station': ORANGE}
+PHASE_COLOURS = {'Quay': GREY, 'Station': BLUE, 'Transit': ORANGE}
+MODE = {'Quay': 'Harbour', 'Station': 'DP', 'Transit': 'Transit'}   # data.phases() kind -> operating mode
+MODE_COLOURS = {'Harbour': GREY, 'DP': BLUE, 'Transit': ORANGE}
+FEATURE_LABELS = {'speed_kn': 'speed [kn]', 'roll_std': 'roll σ [°]', 'pitch_std': 'pitch σ [°]',
+                  'heave_hs_m': 'heave 4σ [m]', 'turn_deg': 'heading change [°/min]'}   # cluster.FEATURES
 BUOY_COLOURS = {'D': BLUE, 'A': ORANGE}
 DAY_COLOURS = {'2023-10-30': BLUE, '2023-10-31': ORANGE, '2023-11-02': AQUA, '2023-11-03': GREY}
 
@@ -266,7 +272,7 @@ def fig_completeness(days):
 
 
 def fig_tracks(days, b):
-    """Where the ship went each day, coloured by phase, with the buoy positions."""
+    """Where the ship went each day, coloured by operating mode, with the buoy positions."""
     ncols = min(2, len(days))
     nrows = int(np.ceil(len(days) / ncols))
     fig, axes = plt.subplots(nrows, ncols, figsize=(5.5 * ncols, 4.5 * nrows), squeeze=False)
@@ -276,7 +282,7 @@ def fig_tracks(days, b):
     for ax, (day, s) in zip(axes.flat, days.items()):
         for kind, colour in PHASE_COLOURS.items():
             g = s[s.kind == kind]
-            ax.scatter(g.lon, g.lat, s=10 if kind == 'Station' else 3, color=colour, label=kind)
+            ax.scatter(g.lon, g.lat, s=10 if kind == 'Station' else 3, color=colour, label=MODE[kind])
         for name, r in pos.iterrows():
             short = name.split()[1]
             ax.scatter(r.longitude, r.latitude, marker='^', s=70, facecolor='none', edgecolor='black', zorder=3)
@@ -300,7 +306,7 @@ def fig_day_timeseries(day, s, p):
         ax.plot(s.time, s[col], lw=0.6, color=BLUE)
         ax.set_ylabel(label)
         for r in p[p.phase.str.startswith('Station')].itertuples():
-            ax.axvspan(r.start, r.end, color=ORANGE, alpha=0.12, lw=0)
+            ax.axvspan(r.start, r.end, color=BLUE, alpha=0.12, lw=0)
     for r in p[p.phase.str.startswith('Station')].itertuples():
         axes[0].annotate(r.phase.replace('Station ', 'S'), (r.start, axes[0].get_ylim()[1]), va='top', fontsize=8)
     axes[-1].xaxis.set_major_formatter(matplotlib.dates.DateFormatter('%H:%M', tz=data.TZ))
@@ -308,164 +314,134 @@ def fig_day_timeseries(day, s, p):
     fig.tight_layout()
     return save(fig, f'3_timeseries_{day}.png')
 
+# ---------- operating mode (Harbour / DP / Transit) ----------
 
-def fig_univariate(s_all):
-    """Distribution of the ship motion per phase type (1-minute values): histograms and box plots."""
-    s_all = pd.concat([minute_stats(g) for _, g in s_all.groupby('day')], ignore_index=True)
-    cols = [('roll_std', 'roll σ per minute [°]'), ('pitch_std', 'pitch σ per minute [°]'),
-            ('heave_hs_m', 'heave 4σ per minute [m]')]
-    fig, axes = plt.subplots(2, len(cols), figsize=(11, 6))
-    for j, (col, label) in enumerate(cols):
-        hi = s_all[col].quantile(0.995)   # cut the 0.5 % largest so the bulk is visible
-        bins = np.linspace(0, hi, 40)
-        for kind, colour in PHASE_COLOURS.items():
-            v = s_all.loc[s_all.kind == kind, col]
-            axes[0, j].hist(v.clip(upper=hi), bins=bins, density=True, histtype='step', lw=1.5,
-                            color=colour, label=f'{kind} (n={len(v)})')
-        axes[0, j].set_xlabel(label)
-        kinds = list(PHASE_COLOURS)
-        bp = axes[1, j].boxplot([s_all.loc[s_all.kind == k, col] for k in kinds],
-                                showfliers=False, patch_artist=True, widths=0.5,
-                                medianprops=dict(color='black'))
-        axes[1, j].set_xticks(range(1, len(kinds) + 1), kinds)
-        for patch, k in zip(bp['boxes'], kinds):
-            patch.set(facecolor=PHASE_COLOURS[k], alpha=0.35, edgecolor=PHASE_COLOURS[k])
-        axes[1, j].set_ylabel(label)
-    axes[0, 0].set_ylabel('density')
-    axes[0, 0].legend(frameon=False)
+def mode_balance(w):
+    """Minutes per operating mode and day: how many examples of each class the model gets."""
+    t = pd.crosstab(w.day, w.correct, margins=True, margins_name='all')
+    return t.reindex(columns=[*MODE_COLOURS, 'all'], fill_value=0)
+
+
+def positive(x):
+    """Log axes cannot show 0 (e.g. no heading change in a minute): put zeros at 0.001."""
+    return x.clip(lower=1e-3)
+
+
+def fig_features_by_mode(w):
+    """The five model features per operating mode (1-minute windows, all days): histograms and box plots,
+    on log axes since the values span several orders of magnitude."""
+    fig, axes = plt.subplots(2, len(FEATURE_LABELS), figsize=(15, 5.5))
+    for j, (col, label) in enumerate(FEATURE_LABELS.items()):
+        v = positive(w[col])
+        bins = np.logspace(np.log10(v.min()), np.log10(v.max()), 40)
+        for mode, colour in MODE_COLOURS.items():
+            x = v[w.correct == mode]
+            axes[0, j].hist(x, bins=bins, histtype='step', lw=1.5, color=colour, label=f'{mode} (n={len(x)})')
+        axes[0, j].set(xscale='log', xlabel=label)
+        bp = axes[1, j].boxplot([v[w.correct == m] for m in MODE_COLOURS], showfliers=False, patch_artist=True,
+                                widths=0.5, medianprops=dict(color='black'))
+        for patch, colour in zip(bp['boxes'], MODE_COLOURS.values()):
+            patch.set(facecolor=colour, alpha=0.35, edgecolor=colour)
+        axes[1, j].set_xticks(range(1, len(MODE_COLOURS) + 1), list(MODE_COLOURS))
+        axes[1, j].set(yscale='log', ylabel=label)
+    axes[0, 0].set_ylabel('minutes')
+    axes[0, 0].legend(frameon=False, fontsize=7)
     fig.tight_layout()
-    return save(fig, '4_univariate_by_phase.png')
+    return save(fig, '4_features_by_mode.png')
 
 
-def fig_buoys(b, phases_by_day):
-    """Waves and wind at buoys D and A on the trial days that have buoy data, ship stations shaded."""
-    signals = [('Hm0', 'Hm0 [m]'), ('Tp', 'Tp [s]'), ('Mdir', 'wave dir. from [°]'),
-               ('WindSpeed', 'wind [m/s]'), ('WindDirection', 'wind dir. from [°]')]
-    fig, axes = plt.subplots(len(signals), len(phases_by_day), figsize=(4 * len(phases_by_day), 9), sharex='col',
-                             squeeze=False)
-    for j, (day, p) in enumerate(phases_by_day.items()):
-        lo, hi = p.start.min() - pd.Timedelta('1h'), p.end.max() + pd.Timedelta('1h')
-        for i, (col, label) in enumerate(signals):
-            ax = axes[i, j]
-            for short, colour in BUOY_COLOURS.items():
-                g = b[(b.short == short) & (b.time >= lo) & (b.time <= hi)]
-                y = g[col]
-                style = dict(lw=1.2)
-                if 'dir' in label:   # directions: dots, and keep values near north together (e.g. 355 and 5)
-                    y = (y - 180) % 360 + 180 if col == 'Mdir' else y
-                    style = dict(marker='.', ls='none', ms=3)
-                ax.plot(g.time, y, color=colour, label=f'buoy {short}', **style)
-            for r in p[p.phase.str.startswith('Station')].itertuples():
-                ax.axvspan(r.start, r.end, color=GREY, alpha=0.15, lw=0)
-            if j == 0:
-                ax.set_ylabel(label)
-        axes[0, j].set_title(day, loc='left')
-        axes[2, j].yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f'{v % 360:.0f}'))
-        axes[-1, j].xaxis.set_major_formatter(matplotlib.dates.DateFormatter('%H:%M', tz=data.TZ))
-        axes[-1, j].set_xlabel('local time (CET)')
-    axes[0, 0].legend(frameon=False)
-    fig.tight_layout()
-    return save(fig, '5_buoy_conditions.png')
+def fig_feature_pairs(w, n=2000):
+    """Pair plot (seaborn) of the five features on log axes, coloured by mode.
+    A random sample of n minutes keeps it readable; each mode keeps its share."""
+    import seaborn as sns
+    d = w.sample(min(n, len(w)), random_state=0)
+    x = np.log10(positive(d[list(FEATURE_LABELS)])).rename(columns=lambda c: 'log10 ' + FEATURE_LABELS[c])
+    g = sns.pairplot(x.assign(mode=d.correct.values), hue='mode', palette=MODE_COLOURS, hue_order=list(MODE_COLOURS),
+                     corner=True, diag_kind='hist', height=1.8, diag_kws={'element': 'step', 'fill': False},
+                     plot_kws={'s': 8, 'alpha': 0.5, 'edgecolor': 'none'})
+    path = OUT / '5_feature_pairs.png'
+    OUT.mkdir(parents=True, exist_ok=True)
+    g.savefig(path, dpi=150)
+    plt.close(g.figure)
+    return path
 
 
-def fig_footprints(s_all, blocks):
-    """DP footprint: position (10 s means) inside the steady-heading blocks of each station, around the
-    station mean, coloured by the relative wave heading of the block (grey = no buoy within MAX_BUOY_KM).
-    Only block data is used, so the approach to the station and the turns between headings are left out.
-    Circle = radius that holds 95 % of the positions (R95)."""
-    stations = blocks[['day', 'station']].drop_duplicates().values.tolist()
-    ncols = min(3, len(stations))
-    nrows = int(np.ceil(len(stations) / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(3.4 * ncols, 3.4 * nrows), squeeze=False)
-    for ax in axes.flat[len(stations):]:
-        ax.set_visible(False)   # empty panels in the last row
-    cmap = plt.get_cmap('twilight')   # cyclic: -180° and +180° get the same colour
-    for ax, (day, station) in zip(axes.flat, stations):
-        st_blocks = blocks[(blocks.day == day) & (blocks.station == station)]
-        parts = []
-        for blk in st_blocks.itertuples():
-            g = s_all[(s_all.day == day) & (s_all.time >= blk.start) & (s_all.time < blk.end)]
-            parts.append(g.assign(rel=blk.rel_Mdir))
-        g_all = pd.concat(parts)
-        north, east = local_xy(g_all.lat, g_all.lon, g_all.lat.mean(), g_all.lon.mean())
-        colours = [GREY if np.isnan(r) else cmap((r + 180) / 360) for r in g_all.rel]
-        ax.scatter(east, north, s=3, c=colours)
-        r95 = np.percentile(np.hypot(north, east), 95)
-        ax.add_patch(plt.Circle((0, 0), r95, fill=False, color=GREY, ls='--'))
-        lim = max(r95 * 1.3, 3)
-        ax.set(xlim=(-lim, lim), ylim=(-lim, lim), aspect='equal', xlabel='east [m]')
-        short = f"{pd.Timestamp(day).day} {pd.Timestamp(day):%b} {station.replace('Station ', 'S')}"
-        ax.set_title(f'{short}: R95 = {r95:.1f} m\n({len(st_blocks)} heading blocks)', loc='left', fontsize=9)
-    for ax in axes[:, 0]:
-        ax.set_ylabel('north [m]')
-    sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(-180, 180))
-    fig.colorbar(sm, ax=axes, shrink=0.6, label='relative wave heading [°]\n0 = head seas, ±90 = beam')
-    return save(fig, '6_dp_footprint.png')
-
-
-def fig_vs_heading(blocks):
-    """Bivariate: footprint, roll, pitch and heave per heading block vs the relative wave heading.
-    Colour = day, circle = buoy D, triangle = buoy A. Marker size = block length."""
-    cols = [('footprint_r95_m', 'footprint R95 [m]'), ('roll_std_wave', 'roll σ [°]'),
-            ('pitch_std_wave', 'pitch σ [°]'), ('heave_hs_wave', 'heave 4σ [m]')]
-    blocks = blocks[blocks.buoy != 'none']
-    fig, axes = plt.subplots(2, 2, figsize=(9, 6.5))
-    axes = axes.flatten()
-    for ax, (col, label) in zip(axes, cols):
-        for (short, day), g in blocks.groupby(['buoy', 'day']):
-            ax.scatter(g.abs_rel_wave, g[col], s=g.minutes * 1.5, color=DAY_COLOURS[day], alpha=0.8,
-                       marker='o' if short == 'D' else '^', edgecolor='white', lw=0.5,
-                       label=f"{pd.Timestamp(day):%-d %b}, buoy {short}")
-        ax.set(xlabel='|relative wave heading| [°] (0 = head, 90 = beam)', ylabel=label, xlim=(-5, 185))
-        ax.set_xticks([0, 45, 90, 135, 180])
-    axes[0].legend(frameon=False)
-    fig.tight_layout()
-    return save(fig, '7_motion_vs_wave_heading.png')
-
-
-def fig_correlation(blocks):
-    """Multivariate: correlation matrix of the heading-block variables."""
-    cols = {'Hm0': 'Hm0', 'Tp': 'Tp', 'wind_ms': 'wind speed', 'abs_rel_wave': '|rel. wave dir.|',
-            'abs_rel_wind': '|rel. wind dir.|', 'roll_std_wave': 'roll σ', 'pitch_std_wave': 'pitch σ',
-            'heave_hs_wave': 'heave 4σ', 'heave_tp_s': 'heave peak period', 'footprint_r95_m': 'footprint R95',
-            'heading_std_deg': 'heading σ',
-            'dist_km': 'dist. to buoy'}
-    blocks = blocks[blocks.buoy != 'none']
-    c = blocks[list(cols)].rename(columns=cols).corr(method='spearman')   # rank correlation: robust, few points
-    fig, ax = plt.subplots(figsize=(7, 6))
+def fig_feature_correlation(w):
+    """Spearman correlation between the five features (all minutes): which features carry the same information."""
+    c = w[list(FEATURE_LABELS)].rename(columns=FEATURE_LABELS).corr(method='spearman')
+    fig, ax = plt.subplots(figsize=(5, 4.2))
     im = ax.imshow(c, cmap='RdBu_r', vmin=-1, vmax=1)
     ax.set_xticks(range(len(c)), c.columns, rotation=45, ha='right')
     ax.set_yticks(range(len(c)), c.columns)
     ax.grid(False)
     for i in range(len(c)):
         for j in range(len(c)):
-            ax.text(j, i, f'{c.iat[i, j]:.1f}', ha='center', va='center', fontsize=7,
+            ax.text(j, i, f'{c.iat[i, j]:.2f}', ha='center', va='center', fontsize=8,
                     color='white' if abs(c.iat[i, j]) > 0.6 else 'black')
     fig.colorbar(im, ax=ax, label='Spearman correlation')
     fig.tight_layout()
-    return save(fig, '8_correlation.png')
+    return save(fig, '6_feature_correlation.png')
 
 
-def fig_spectra(blocks, spectra):
-    """Roll, pitch and heave spectra of the heading blocks at buoy D that have raw 100 Hz data,
-    coloured by the relative wave heading. Dashed line: mean buoy peak period Tp."""
-    blocks = blocks[(blocks.buoy == 'D') & (blocks.motion_source == 'raw 100 Hz')]
-    fig, axes = plt.subplots(1, 3, figsize=(11, 3.4))
-    cmap, norm = plt.get_cmap('viridis'), plt.Normalize(0, 180)
-    for blk in blocks.itertuples():
-        spec = spectra[(blk.start, blk.end)]
-        for ax, name in zip(axes, ['roll', 'pitch', 'heave']):
-            f, psd = spec[name]
-            ok = (f > 1 / 25) & (f < 0.5)
-            ax.plot(f[ok], psd[ok], lw=1, color=cmap(norm(blk.abs_rel_wave)))
-    units = {'roll': '°²/Hz', 'pitch': '°²/Hz', 'heave': 'm²/Hz'}
-    for ax, name in zip(axes, ['roll', 'pitch', 'heave']):
-        ax.axvline(1 / blocks.Tp.mean(), color=GREY, ls='--', lw=1)
-        ax.set(xlabel='frequency [Hz]', ylabel=f'{name} PSD [{units[name]}]')
-        ax.set_title(name, loc='left')
-    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
-    fig.colorbar(sm, ax=axes, shrink=0.8, label='|relative wave heading| [°]')
-    return save(fig, '9_motion_spectra.png')
+MOTION = ['roll_std', 'pitch_std', 'heave_hs_m']   # the wave-induced motion features
+
+
+def harbour_like(w, q=0.95):
+    """True for minutes where roll, pitch and heave are all at or below the q-quantile of the harbour minutes,
+    i.e. the ship moves as little as when it lies at the quay."""
+    hi = w.loc[w.correct == 'Harbour', MOTION].quantile(q)
+    return (w[MOTION] <= hi).all(axis=1)
+
+
+def station_minutes(w, phases_by_day):
+    """(day, station row of data.phases, mask of its minutes in w) for every DP station."""
+    for day, p in phases_by_day.items():
+        for st in p[p.phase.str.startswith('Station')].itertuples():
+            yield day, st, (w.day == day) & (w.time >= st.start) & (w.time < st.end)
+
+
+def station_table(w, phases_by_day, b):
+    """One row per DP station: minutes, median roll σ and heave 4σ, the share of minutes that look like
+    harbour (harbour_like), and the mean Hm0 of the nearest buoy (only if it is within MAX_BUOY_KM)."""
+    like = harbour_like(w)
+    rows = []
+    for day, st, m in station_minutes(w, phases_by_day):
+        short, km = nearest_buoy(st.lat, st.lon, b)
+        bb = b[(b.short == short) & (b.time > st.start) & (b.time <= st.end + pd.Timedelta('10min'))]
+        rows.append({'day': day, 'station': st.phase, 'minutes': int(m.sum()),
+                     'roll_std': w.loc[m, 'roll_std'].median(), 'heave_hs_m': w.loc[m, 'heave_hs_m'].median(),
+                     'harbour_like_pct': 100 * like[m].mean(),
+                     'buoy': short if km <= MAX_BUOY_KM else 'none', 'buoy_km': km,
+                     'Hm0': bb.Hm0.mean() if km <= MAX_BUOY_KM else np.nan})
+    return pd.DataFrame(rows)
+
+
+def fig_dp_stations(w, phases_by_day, b):
+    """Why DP sometimes looks like harbour: roll σ and heave 4σ per minute at each DP station, next to the
+    harbour range (grey band: 5-95 % of the harbour minutes). Labels: nearest buoy and its Hm0.
+    The number above each box is the share of minutes whose roll, pitch and heave all look like harbour."""
+    tab = station_table(w, phases_by_day, b)
+    harbour = w[w.correct == 'Harbour']
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+    for ax, col in zip(axes, ['roll_std', 'heave_hs_m']):
+        lo, hi = harbour[col].quantile([0.05, 0.95])
+        ax.axhspan(lo, hi, color=GREY, alpha=0.25, lw=0, label='harbour, 5-95 %')
+        values = [positive(w.loc[m, col]) for _, _, m in station_minutes(w, phases_by_day)]
+        bp = ax.boxplot(values, showfliers=False, patch_artist=True, widths=0.6,
+                        medianprops=dict(color='black'))
+        for patch in bp['boxes']:
+            patch.set(facecolor=BLUE, alpha=0.35, edgecolor=BLUE)
+        labels = [f"{pd.Timestamp(r.day):%-d %b} {r.station.replace('Station ', 'S')}\n"
+                  + (f'{r.buoy}, Hm0 {r.Hm0:.2f} m' if r.buoy != 'none' else 'no buoy')
+                  for r in tab.itertuples()]
+        ax.set_xticks(range(1, len(tab) + 1), labels, rotation=45, ha='right', fontsize=7)
+        ax.set(yscale='log', ylabel=FEATURE_LABELS[col])
+        for i, r in enumerate(tab.itertuples(), start=1):
+            ax.annotate(f'{r.harbour_like_pct:.0f}%', (i, 1), xycoords=('data', 'axes fraction'),
+                        ha='center', va='bottom', fontsize=7)
+    axes[0].legend(frameon=False, loc='lower left')
+    fig.tight_layout()
+    return save(fig, '7_dp_stations_vs_harbour.png')
 
 
 def fig_missing(blocks):

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from tmr12 import data, eda
+from tmr12 import cluster, data, eda
 
 SHIP_DIR = None   # e.g. Path('/Users/<you>/Library/CloudStorage/OneDrive-NTNU/TMR12/DP data')
 
@@ -40,11 +40,17 @@ if __name__ == '__main__':
     data.buoy_checks(b).to_csv(eda.OUT / 'buoy_quality.csv', index=False)
     eda.summary_stats(s_all).to_csv(eda.OUT / 'summary_stats.csv')
     # Steady-heading blocks; with raw files the motion is computed from the 100 Hz data of each whole block
-    spectra = {}
-    blocks = pd.concat([eda.dp_blocks(days[d], phases[d], b, eda.raw_files(raw_dirs[d]) if raw_dirs[d] else None,
-                                      spectra).assign(day=d)
+    blocks = pd.concat([eda.dp_blocks(days[d], phases[d], b, eda.raw_files(raw_dirs[d]) if raw_dirs[d] else None).assign(day=d)
                         for d in days], ignore_index=True)
     blocks.round(3).to_csv(eda.OUT / 'dp_heading_blocks.csv', index=False)
+
+    # Operating mode per minute: the same features and labels as the model in tmr12/cluster.py
+    w = cluster.windows(s_all)
+    w = w[w.correct != 'Unknown']
+    eda.mode_balance(w).to_csv(eda.OUT / 'mode_balance.csv')
+    eda.station_table(w, phases, b).round(3).to_csv(eda.OUT / 'dp_stations.csv', index=False)
+    print(eda.mode_balance(w).to_string())
+    print(eda.station_table(w, phases, b).round(2).to_string(index=False))
 
     # Duplicates and outliers (Tukey's 1.5 IQR rule on the 1-minute values, per phase type)
     minutes = pd.concat([eda.minute_stats(s) for s in days.values()], ignore_index=True)
@@ -59,11 +65,8 @@ if __name__ == '__main__':
     print(eda.fig_tracks(days, b))
     for day in days:
         print(eda.fig_day_timeseries(day, days[day], phases[day]))
-    print(eda.fig_univariate(s_all))
-    buoy_days = sorted(set(b.time.dt.tz_convert(data.TZ).dt.strftime('%Y-%m-%d')) & set(phases))
-    print(eda.fig_buoys(b, {d: phases[d] for d in buoy_days}))
-    print(eda.fig_footprints(s_all, blocks))
-    print(eda.fig_vs_heading(blocks))
-    print(eda.fig_correlation(blocks))
-    print(eda.fig_spectra(blocks, spectra))
+    print(eda.fig_features_by_mode(w))
+    print(eda.fig_feature_pairs(w))
+    print(eda.fig_feature_correlation(w))
+    print(eda.fig_dp_stations(w, phases, b))
     print(eda.fig_missing(blocks))
