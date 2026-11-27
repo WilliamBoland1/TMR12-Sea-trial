@@ -105,7 +105,7 @@ def load_buoy_blocks():
 
 @st.cache_data(show_spinner='Clustering one-minute windows...')
 def run_cluster():
-    """Step 8: every 1-minute window with its cluster, and its scores against the correct timeline."""
+    """Step 8: every 1-minute window with its cluster, and its scores against the reference timeline."""
     out, rf = forest.fit_forest(cluster.fit(cluster.load_windows()))
     return out, rf, *cluster.check(out)
 
@@ -646,12 +646,12 @@ def page_states():
          'Here the ship is not told where it is. Each minute of the log is described by five numbers from its own '
          'motion: speed, roll σ, pitch σ, heave 4σ and heading change. **K-means** groups similar '
          f'minutes into {cluster.N_STATES} states without any labels: each minute joins the nearest of '
-         f'{cluster.N_STATES} cluster centres. The **correct timeline** (the phases from '
+         f'{cluster.N_STATES} cluster centres. The **reference timeline** (the phases from '
          'step 2: quay = harbour, station = DP, transit) is used only afterwards, to score the result. '
-         'For comparison, a supervised **random forest** learns the correct timeline from the same five numbers.',
+         'For comparison, a supervised **random forest** learns the reference timeline from the same five numbers.',
          caption=day_caption(day))
     show_fig(cluster.fig_timeline(out[out.day == day]))
-    st.caption(f'Top = correct timeline, middle = random forest, bottom = clustering (both as the most common '
+    st.caption(f'Top = reference timeline, middle = random forest, bottom = clustering (both as the most common '
                f'state over {cluster.SMOOTH_MIN} min).')
 
     c = st.columns(4)
@@ -676,10 +676,10 @@ def page_states():
                    'timelines group the minutes the same way, whatever the names (1 = identical, 0 = random).')
         st.markdown('**Clustering per state** (smoothed)')
         st.dataframe(per_state.round(2))
-        st.caption('Recall = share of the correct minutes of this state that the model found. Precision = share of '
+        st.caption('Recall = share of the reference minutes of this state that the model found. Precision = share of '
                    'the minutes the model gave this state that are right. F1 = the two combined. Minutes = how many '
-                   'minutes of this state the correct timeline has.')
-        st.markdown('**Correct timeline (rows) vs clustering (columns)**, minutes')
+                   'minutes of this state the reference timeline has.')
+        st.markdown('**Reference timeline (rows) vs clustering (columns)**, minutes')
         st.dataframe(table)
         show_fig(cluster.fig_features(out))
         st.markdown('Speed is needed to separate transit from DP.\n\n'
@@ -688,7 +688,7 @@ def page_states():
         st.markdown('**The random forest** (supervised)')
         show_fig(forest.fig_importance(rf))
         st.caption(f'{forest.N_TREES} decision trees, each trained on a random sample of minutes and features, vote '
-                   f'on the state. Each day is predicted by a forest trained on the correct timeline of the other '
+                   f'on the state. Each day is predicted by a forest trained on the reference timeline of the other '
                    f'{out.day.nunique() - 1} days only, so it is always tested on a day it never saw. The bars show '
                    f'how much each input helps the forest fitted on all days; the most useful is '
                    f'{cluster.FEATURES[rf.feature_importances_.argmax()]}.')
@@ -720,7 +720,7 @@ def page_conclusion():
         f"{per_state.loc['Transit', 'recall']:.1%} of the transit minutes. The biggest miss is {n} {true} minutes "
         f"called {pred}; the random forest makes that mistake in {rf_miss} minutes.\n\n"
         '#### Limits\n'
-        '- The correct timeline is itself made by rules (speed, and the first and last stop of the day is the quay), '
+        '- The reference timeline is itself made by rules (speed, and the first and last stop of the day is the quay), '
         "not taken from the DP system's own log.\n"
         '- In calm, sheltered water, DP and harbour look the same from motion alone.\n'
         f'- Only {len(DAYS)} days from one ship.\n'

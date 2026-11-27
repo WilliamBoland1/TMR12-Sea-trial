@@ -1,7 +1,7 @@
 """Find the vessel's operating state (Harbour / DP / Transit) from its motion alone: python cluster.py
 
 Unsupervised: k-means groups 1-minute windows of ship motion into three clusters.
-The correct timeline (rule-based phases) is used only to score the result.
+The reference timeline (rule-based phases) is used only to score the result.
 For comparison, a supervised random forest is trained on it (leave one day out). Writes figures and tables to reports/cluster/.
 Ship data folder: set SHIP_DIR as in eda.py.
 """
@@ -34,7 +34,7 @@ if __name__ == '__main__':
     out = cluster.fit(w)
     out, rf = forest.fit_forest(out)
     scores, per_state, table = cluster.check(out)
-    print('Performance against the correct timeline:')
+    print('Performance against the reference timeline:')
     print(scores.round(3))
     print(per_state.round(3))
     print(table)

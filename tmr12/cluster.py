@@ -1,9 +1,9 @@
 """Unsupervised operating-state detection: Harbour, Transit or DP, found from the ship's own motion.
 
 No land or distance rules. Each 1-minute window is described by five numbers from the ship logs, and a
-k-means groups similar windows into three clusters. The correct timeline (the phases
+k-means groups similar windows into three clusters. The reference timeline (the phases
 from data.phases(): quay = Harbour, station = DP, transit) is used only afterwards, to score the result.
-For comparison, a supervised random forest (forest.py) learns the correct timeline from the same five features.
+For comparison, a supervised random forest (forest.py) learns the reference timeline from the same five features.
 """
 import matplotlib.pyplot as plt
 import numpy as np
@@ -18,10 +18,9 @@ WINDOW = '1min'      # one sample = one minute of data
 SMOOTH_MIN = 5       # a state lasts minutes: take the most common cluster over this many windows
 N_STATES = 3
 FEATURES = ['speed_kn', 'roll_std', 'pitch_std', 'heave_hs_m', 'turn_deg']
-UNITS = {'speed_kn': 'kn', 'roll_std': 'deg', 'pitch_std': 'deg', 'heave_hs_m': 'm', 'turn_deg': 'deg'}
 STATES = ['Harbour', 'DP', 'Transit']
 PHASE_STATE = {'Quay': 'Harbour', 'Station': 'DP', 'Transit': 'Transit'}   # data.phases() kind -> state name
-COLOURS = {'Harbour': '#8c8c8c', 'DP': '#1f77b4', 'Transit': '#ff7f0e'}
+COLOURS = eda.MODE_COLOURS   # same mode colours as the EDA and vis figures
 
 
 def heading_change(h):
@@ -39,7 +38,7 @@ def windows(s):
 
 
 def load_windows():
-    """Every day's 10 s rows with their correct state, cut into 1-minute windows."""
+    """Every day's 10 s rows with their reference state, cut into 1-minute windows."""
     rows = []
     for day in eda.available_days():   # days in data/processed/ (in git) or data/raw/ship/
         s = data.load_day(day)
@@ -85,27 +84,27 @@ VERSIONS = {'Clustering': 'state', 'Clustering, smoothed': 'state_smooth',
 
 
 def check(out):
-    """Score the clustering (and the random forest) against the correct timeline.
+    """Score the clustering (and the random forest) against the reference timeline.
     scores: per model version, accuracy (share of minutes right) and adjusted Rand index (1 = identical).
-    per_state: for the smoothed clustering, recall (share of the correct minutes the model found), precision (share
-    of the model's minutes that are right), F1 (the two combined) and the number of correct minutes.
-    table: correct state (rows) vs cluster (columns), in minutes."""
+    per_state: for the smoothed clustering, recall (share of the reference minutes the model found), precision (share
+    of the model's minutes that are right), F1 (the two combined) and the number of reference minutes.
+    table: reference state (rows) vs cluster (columns), in minutes."""
     known = out[out.correct != 'Unknown']
     scores = pd.DataFrame({name: {'accuracy': accuracy_score(known.correct, known[col]),
                                   'ARI': adjusted_rand_score(known.correct, known[col])}
                            for name, col in VERSIONS.items() if col in known}).T
     p, r, f, n = precision_recall_fscore_support(known.correct, known.state_smooth, labels=STATES, zero_division=0)
     per_state = pd.DataFrame({'recall': r, 'precision': p, 'F1': f, 'minutes': n}, index=STATES)
-    table = pd.crosstab(known.correct, known.state_smooth, rownames=['Correct timeline'], colnames=['Cluster'])
+    table = pd.crosstab(known.correct, known.state_smooth, rownames=['Reference timeline'], colnames=['Cluster'])
     return scores, per_state, table.reindex(index=STATES, columns=STATES, fill_value=0)
 
 
 # ---------- figures ----------
 
 def fig_timeline(out):
-    """Per day: colour strips over local time, the correct timeline on top, then the random forest (if fitted)
+    """Per day: colour strips over local time, the reference timeline on top, then the random forest (if fitted)
     and the clustering at the bottom."""
-    rows = [(c, label) for c, label in [('correct', 'Correct timeline'), ('forest_smooth', 'Random forest'),
+    rows = [(c, label) for c, label in [('correct', 'Reference timeline'), ('forest_smooth', 'Random forest'),
                                         ('state_smooth', 'Clustering')] if c in out][::-1]   # bottom row first
     days = list(out.day.unique())
     fig, axes = plt.subplots(len(days), 1, figsize=(12, 0.6 * len(rows) * len(days) + 0.4), squeeze=False)
@@ -136,7 +135,7 @@ def fig_features(out):
             patch.set_facecolor(c)
             patch.set_alpha(0.7)
         ax.set_yscale('log')
-        ax.set_title(f'{f} [{UNITS[f]}]', fontsize=10)
+        ax.set_title(eda.FEATURE_LABELS[f], fontsize=10)
     fig.suptitle('Inputs per cluster', x=0.01, ha='left')
     fig.tight_layout()
     return fig

@@ -33,7 +33,7 @@ MODE = {'Quay': 'Harbour', 'Station': 'DP', 'Transit': 'Transit'}   # data.phase
 MODE_COLOURS = {'Harbour': GREY, 'DP': BLUE, 'Transit': ORANGE}
 FEATURE_LABELS = {'speed_kn': 'speed [kn]', 'roll_std': 'roll σ [°]', 'pitch_std': 'pitch σ [°]',
                   'heave_hs_m': 'heave 4σ [m]', 'turn_deg': 'heading change [°/min]'}   # cluster.FEATURES
-BUOY_COLOURS = {'D': BLUE, 'A': ORANGE}
+BUOY_COLOURS = {'D': BLUE, 'A': AQUA}   # not ORANGE: that is the transit colour
 
 plt.rcParams.update({'figure.dpi': 110, 'savefig.dpi': 150, 'font.size': 9,
                      'axes.spines.top': False, 'axes.spines.right': False,

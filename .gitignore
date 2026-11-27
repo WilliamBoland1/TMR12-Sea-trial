@@ -9,3 +9,6 @@ docs/
 
 # Python caches
 __pycache__/
+
+# macOS folder metadata
+.DS_Store

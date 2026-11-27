@@ -8,12 +8,12 @@ The app (`streamlit run app.py`) tells the same story, one step per page. Each p
 
 1. **The question:** can the ship's own motion tell us whether it is in harbour, on DP or in transit, and why that matters for comparing real operations with simulations.
 2. **One day at sea:** what does the data look like? The ship sails from the quay to a few stations and back, and moves most at the stations.
-3. **Can we trust the data?** The ship logs are complete. Limits: GNSS height updates only ~10×/s, it has a noise floor of ~0.15 m (4σ), and buoys C, D and F have no wave data in November.
+3. **Can we trust the data?** The ship logs are complete. Limits: GNSS height updates only ~10×/s, it has a noise floor of ~0.1 m (4σ), and buoys C, D and F have no wave data in November.
 4. **How the ship moves:** almost still at the quay, a little in transit, most at the stations. Each state moves differently, which is what the models use.
 5. **The waves at the buoys:** small waves. Exposed buoy D had about 0.6–0.7 m, sheltered A and B about 0.2 m.
 6. **Ship vs buoy:** more waves give more heave (r ≈ 0.73), but this is tangled up with the site (D vs A) and with distance to the buoy.
 7. **Heading vs waves:** where the buoy was close (31 Oct, D), the ship rolled most with waves from the side.
-8. **Machine learning: operating state:** an unsupervised clustering of 1-minute windows (`python cluster.py`), scored against the correct timeline (the rule-based phases from step 2) and compared with a supervised decision tree. Both get most minutes right; calm DP minutes look like harbour.
+8. **Machine learning: operating state:** an unsupervised clustering of 1-minute windows (`python cluster.py`), scored against the reference timeline (the rule-based phases from step 2) and compared with a supervised random forest (leave one day out). Both get most minutes right; calm DP minutes look like harbour.
 9. **What we learned:** mostly yes, a model can label the operating state from motion alone, plus the limits and next steps.
 
 ## Run

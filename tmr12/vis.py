@@ -30,7 +30,8 @@ def save(fig, name):
 
 
 def short_day(day):
-    return pd.Timestamp(day).strftime('%-d %b')
+    t = pd.Timestamp(day)
+    return f'{t.day} {t:%b}'   # not '%-d': that only works on Linux/macOS
 
 
 def fig_time_budget(w):

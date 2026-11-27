@@ -1,10 +1,11 @@
-"""Supervised comparison for the clustering: a random forest learns the correct state (Harbour / DP / Transit)
+"""Supervised comparison for the clustering: a random forest learns the reference state (Harbour / DP / Transit)
 from the same five motion features as the k-means clustering in cluster.py."""
 import matplotlib.pyplot as plt
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 
-from tmr12.cluster import COLOURS, FEATURES, UNITS, smooth
+from tmr12 import eda
+from tmr12.cluster import FEATURES, smooth
 
 N_TREES = 200
 
@@ -29,9 +30,9 @@ def fit_forest(out):
 
 def fig_importance(forest):
     """How much each feature helps the forest separate the states (mean decrease in impurity, sums to 1)."""
-    imp = pd.Series(forest.feature_importances_, index=[f'{f} [{UNITS[f]}]' for f in FEATURES]).sort_values()
+    imp = pd.Series(forest.feature_importances_, index=[eda.FEATURE_LABELS[f] for f in FEATURES]).sort_values()
     fig, ax = plt.subplots(figsize=(7, 3))
-    ax.barh(imp.index, imp.values, color=COLOURS['DP'])
+    ax.barh(imp.index, imp.values, color=eda.GREY)
     ax.set_xlabel('Feature importance')
     fig.tight_layout()
     return fig
