@@ -29,9 +29,7 @@ def save(fig, name):
     return path
 
 
-def short_day(day):
-    t = pd.Timestamp(day)
-    return f'{t.day} {t:%b}'   # not '%-d': that only works on Linux/macOS
+short_day = eda.short_day
 
 
 def fig_time_budget(w):

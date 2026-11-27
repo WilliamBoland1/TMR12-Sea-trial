@@ -195,6 +195,8 @@ def with_buoy(blk, b, buoy):
 
 def nearest_buoy_blocks(blk, b):
     """10-min ship blocks, each joined with the nearest buoy that has data at that time."""
+    if b.empty:   # a day with no buoy records (3 Nov): no blocks to pair
+        return blk.iloc[:0]
     m = pd.concat([with_buoy(blk, b, n).assign(buoy=n) for n in b.buoy.unique()], ignore_index=True)
     return m.sort_values('dist_km').drop_duplicates('time').sort_values('time').reset_index(drop=True)
 

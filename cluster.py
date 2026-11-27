@@ -38,8 +38,12 @@ if __name__ == '__main__':
     print(scores.round(3))
     print(per_state.round(3))
     print(table)
+    checks = forest.feature_checks(out)
+    print('Random forest without a feature (leave one day out, not smoothed):')
+    print(checks.round(3))
 
     OUT.mkdir(parents=True, exist_ok=True)
+    checks.to_csv(OUT / 'feature_checks.csv', lineterminator='\n')
     table.to_csv(OUT / 'confusion_vs_correct.csv')
     scores.to_csv(OUT / 'performance.csv')
     per_state.to_csv(OUT / 'performance_per_state.csv')

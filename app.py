@@ -15,7 +15,7 @@ alt.data_transformers.disable_max_rows()
 warnings.filterwarnings('ignore', message='Automatically deduplicated selection')   # intended: one shared x-zoom
 BLUE, ORANGE, AQUA, BUOY, GREY, SHADE = '#2a78d6', '#eb6834', '#1baf7a', '#6250d6', '#9e9d98', '#ecebe6'
 RED, MID, INK, SURFACE = '#e34948', '#f0efec', '#0b0b0b', '#fcfcfb'
-BUOY_COLORS = {'A': BLUE, 'B': ORANGE, 'C': AQUA, 'D': '#eda100', 'F': '#e87ba4', 'G': '#008300'}  # lines only
+BUOY_COLORS = {'A': BLUE, 'D': '#eda100'}  # lines only; the buoys in data/raw/buoys/buoy_wave_params_trial.csv
 PHASES = ['Quay', 'Transit', 'Station']
 DAYS = data.days()
 MAX_KM = 10.0   # main plots leave out 10-min blocks further than this from their buoy
@@ -365,13 +365,12 @@ def page_quality():
     st.markdown(
         '**Known gaps**\n'
         '- **30 Oct:** the plan said buoys D and B; the ship actually stopped at D (Station 1) and A (Stations 2–3).\n'
-        '- **2 Nov:** buoy D, where the ship sat, has no wave data; the nearest buoy with data is A, about 7 km away.\n'
-        '- **3 Nov:** the ship was off Kristiansund; the nearest buoy, G, is 24–65 km away inside Halsafjorden.')
+        '- **3 Nov:** the ship was off Kristiansund, more than 70 km from buoys A and D, so that day has no '
+        'sea-state reference.')
     takeaway('The ship logs are complete: every 10 s file is there with all 1000 samples, with no gaps and no '
              'impossible values. Three limits to keep in mind: (1) the GNSS height only updates about 10 times a '
              'second, not 100; (2) even tied up at the quay the ship "heaves" about 0.15 m (4σ), which is GNSS noise; '
-             '(3) buoys C, D and F have no wave data in November, so 2 and 3 Nov can only be compared with buoys '
-             'several km away.')
+             '(3) on 3 Nov the ship was more than 70 km from both buoys, so that day has no sea-state reference.')
 
     with st.expander('Show details: every check, sensor update rates, lineage'):
         show_table(ship)
@@ -392,15 +391,15 @@ def page_quality():
                    'so it rests on that rate (fine for waves of 0.1–1 Hz).')
         st.markdown('**Buoy checks**')
         show_table(q.drop(columns='label'))
-        st.caption('"none" = only raw motion files exist for that buoy and month (no Hm0/Tp/Mdir). '
-                   'mooring_spread_m = farthest the buoy sat from its median position. Positions are stored with 3 '
-                   'decimals (about 110 m), so spreads at that level are rounding, not drift.')
+        st.caption('mooring_spread_m = farthest the buoy sat from its median position: how far it swings on its '
+                   'mooring (watch circle).')
         st.markdown(
             '**Undocumented columns:** ship CSV columns 3–7 and 11–13 are interpreted from the data (see README).\n\n'
             '**Lineage.** Ship: `data/raw/ship/<day>/<hh>/*.csv` (100 Hz, 10 s per file) → '
             '`data/processed/ship_10s_<day>.parquet` (one row per file) → phases, 10-min blocks, heading blocks → pages. '
-            'Buoys: MET Norway THREDDS `*_wave.nc` → `cut_buoys.py` (trial windows) → `buoy_wave_params_trial.csv` '
-            '(10-min records, UTC, time = end of period) → pages.')
+            'Buoys: MET Norway THREDDS (buoys A and D, 05:00–18:50 UTC on 30 Oct, 31 Oct and 2 Nov) → '
+            '`fetch_buoys.py` → `data/raw/buoys/buoy_wave_params_trial.csv` (in git; 10-min records, UTC, '
+            'time = end of period) → pages.')
     next_step(3)
 
 
@@ -457,11 +456,11 @@ def page_waves():
         tooltip=['buoy', alt.Tooltip('local:T', format='%d %b %H:%M', title='time'),
                  alt.Tooltip(f'{param}:Q', format='.2f')],
     ).properties(width=240, height=220).facet(column=alt.Column('day:N', title=None)).resolve_scale(x='independent'))
-    st.caption('A, B, C = Sulafjorden · D = Breisundet · F = Vartdalsfjorden · G = Halsafjorden (near Kristiansund). '
-               'C, D and F have no wave data in November.')
+    st.caption('A = Sulafjorden (sheltered) · D = Breisundet (exposed): the two buoys within 3 km of the DP stations. '
+               'On 3 Nov the ship was far from both, so there is no buoy data for that day.')
     takeaway('The waves were small during the trial: Hm0 stayed below 0.8 m at every buoy. The exposed buoy **D** in '
-             'Breisundet had the biggest waves (about 0.6–0.7 m), the sheltered buoys A and B in Sulafjorden about '
-             '0.2 m. Keep this difference between sites in mind: it comes back in step 6.')
+             'Breisundet had the biggest waves (about 0.6–0.7 m on 30 and 31 Oct, 0.4 m on 2 Nov), the sheltered buoy '
+             'A in Sulafjorden about 0.2 m. Keep this difference between sites in mind: it comes back in step 6.')
 
     with st.expander('Show details: distributions, wave climate, correlations'):
         left, right = st.columns(2)
@@ -504,9 +503,9 @@ def page_ship_vs_buoy():
     st.altair_chart(ship_buoy_scatter(near))
     takeaway(f'Roughly, yes: blocks with bigger waves give more heave (correlation r = '
              f'{near.heave_hs_m.corr(near.Hm0):.2f}). But look at the colours: all the big-wave points are at buoy D '
-             'and all the small ones at A, so part of the link is simply *where* the ship was. On 2 Nov the only buoy '
-             "with data, A, was 6–7 km away, and the ship heaved about twice what A's waves suggest: the buoy was not "
-             "measuring the ship's sea.")
+             'and all the small ones at A, so part of the link is simply *where* the ship was. On 2 Nov the ship sat '
+             "0.2 km from D for seven hours and heaved 0.8–1.0 times D's Hm0, close to the dashed line; the few high "
+             'points (11:00–11:50) are the run out to open water 4–8 km west of D.')
 
     with st.expander('Show details: other ship responses, correlations, one day in detail'):
         c1, c2 = st.columns(2)
@@ -579,11 +578,12 @@ def page_heading():
             tooltip=['day', 'station', alt.Tooltip('start:T', format='%H:%M'), alt.Tooltip('minutes:Q', format='.0f'),
                      alt.Tooltip('heading:Q', format='.0f'), alt.Tooltip('rel_Mdir:Q', format='.0f'),
                      alt.Tooltip('roll_std:Q', format='.2f'), 'buoy', alt.Tooltip('dist_km:Q', format='.1f')],
-        ).properties(height=260, width=340).facet(facet=alt.Facet('day:N', title=None), columns=3))
-    takeaway('Only one station gives a clean answer: 31 Oct at buoy D, with the ship less than 1 km from the buoy. '
-             'There the ship rolled about 1.7–1.9° with head seas, 2.6–3.0° with waves from the side, and 1.0–1.5° '
-             'with waves from behind, as you would expect for a ship. On the other days the buoy was mostly several '
-             'km away, so its wave direction is a poor guide and no clear pattern shows.')
+        ).properties(height=260, width=260).facet(facet=alt.Facet('day:N', title=None), columns=3))
+    takeaway('Two days give a clean answer, both with the ship less than 1 km from buoy D. On 31 Oct (Hm0 about '
+             '0.7 m) the ship rolled about 1.7–1.9° with head seas, 2.6–3.0° with waves from the side and 1.0–1.8° '
+             'with waves from behind; on 2 Nov (Hm0 0.4 m) 0.7–0.8°, 1.2–1.4° and 0.7–1.1°. Both times waves from the '
+             'side give the most roll, as you would expect for a ship. On 30 Oct the nearest buoy, A, was 6.7 km '
+             'from the long station 1, so its wave direction is a poor guide and no clear pattern shows.')
 
     with st.expander('Show details: one station in detail'):
         st.caption(day_caption(day) + ' · change the day in the sidebar')

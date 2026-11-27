@@ -68,6 +68,7 @@ def test_nearest_buoy_blocks():
                    buoy_rows('E39 A Sulafjorden', t, 62.427, 6.044)])
     m = data.nearest_buoy_blocks(blk, b)
     assert list(m.buoy) == ['E39 D Breisundet'] * 2 + ['E39 A Sulafjorden'], list(m.buoy)
+    assert data.nearest_buoy_blocks(blk, b.iloc[:0]).empty   # a day without buoy records
 
 
 def test_quality_checks():

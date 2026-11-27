@@ -1,5 +1,8 @@
-# Data (raw ship/buoy files ~4 GB + generated parquet)
-/data/raw/
+# Data (raw ship/buoy files ~4 GB), except the small buoy table every script needs (buoys A + D, fetch_buoys.py)
+/data/raw/*
+!/data/raw/buoys/
+/data/raw/buoys/*
+!/data/raw/buoys/buoy_wave_params_trial.csv
 
 # Documents
 docs/

@@ -1,0 +1,7 @@
+,accuracy
+all five features,0.9673837612768911
+roll shuffled on the test day,0.9385843164469119
+without roll,0.9673837612768911
+without pitch,0.9663428174878557
+without roll and pitch,0.9698126301179736
+without speed,0.8546148507980569

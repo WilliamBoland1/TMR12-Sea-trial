@@ -40,6 +40,12 @@ plt.rcParams.update({'figure.dpi': 110, 'savefig.dpi': 150, 'font.size': 9,
                      'axes.grid': True, 'grid.color': '#e4e3df', 'grid.linewidth': 0.6,
                      'axes.edgecolor': '#8a8984', 'axes.titlesize': 10, 'axes.titleweight': 'bold'})
 
+def short_day(day):
+    """'2023-10-30' -> '30 Oct'."""
+    t = pd.Timestamp(day)
+    return f'{t.day} {t:%b}'   # not '%-d': that only works on Linux/macOS
+
+
 M_PER_DEG_LAT = 111_320   # metres per degree latitude (good enough for a few hundred metres)
 MAX_BUOY_KM = 3           # a buoy further away than this does not describe the waves at the ship
 
@@ -328,7 +334,7 @@ def fig_dp_stations(w, phases_by_day, b):
                         medianprops=dict(color='black'))
         for patch in bp['boxes']:
             patch.set(facecolor=BLUE, alpha=0.35, edgecolor=BLUE)
-        labels = [f"{pd.Timestamp(r.day):%-d %b} {r.station.replace('Station ', 'S')}\n"
+        labels = [f"{short_day(r.day)} {r.station.replace('Station ', 'S')}\n"
                   + (f'{r.buoy}, Hm0 {r.Hm0:.2f} m' if r.buoy != 'none' else 'no buoy')
                   for r in tab.itertuples()]
         ax.set_xticks(range(1, len(tab) + 1), labels, rotation=45, ha='right', fontsize=7)
